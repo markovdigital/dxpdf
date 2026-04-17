@@ -3,13 +3,20 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use skia_safe::{pdf, Data, FontMgr, Paint};
+use skia_safe::{
+    path_effect::PathEffect, pdf, Color4f, Data, FontMgr, Paint, Path, PathBuilder, PathFillType,
+};
 
 use crate::render::dimension::Pt;
 use crate::render::error::RenderError;
 use crate::render::fonts;
-use crate::render::layout::draw_command::{DrawCommand, LayoutedPage};
+use crate::render::layout::draw_command::{
+    DrawCommand, LayoutedPage, ResolvedDashPattern, ResolvedFill, ResolvedLineCap,
+    ResolvedLineJoin, ResolvedStroke,
+};
+use crate::render::resolve::drawing_color::Rgba;
 use crate::render::resolve::images::MediaEntry;
+use crate::render::resolve::shape_geometry::{PathVerb, SubPath};
 use crate::render::skia_conv::{to_color4f, to_line, to_point, to_rect, to_size};
 
 /// Target resolution for embedded images (pixels per inch).
@@ -167,8 +174,184 @@ fn render_page(
                 let name_data = Data::new_copy(&name_bytes);
                 canvas.annotate_named_destination(to_point(*position), &name_data);
             }
+            DrawCommand::Path {
+                origin,
+                rotation,
+                flip_h,
+                flip_v,
+                extent,
+                paths,
+                fill,
+                stroke,
+                effects: _,
+            } => {
+                canvas.save();
+                // Translate to the shape's origin.
+                canvas.translate((origin.x.raw(), origin.y.raw()));
+                // Apply flip / rotation around the shape's center.
+                let cx = extent.width.raw() / 2.0;
+                let cy = extent.height.raw() / 2.0;
+                let rot_deg = rotation.raw() as f32 / 60_000.0;
+                if *flip_h || *flip_v || rot_deg != 0.0 {
+                    canvas.translate((cx, cy));
+                    if rot_deg != 0.0 {
+                        canvas.rotate(rot_deg, None);
+                    }
+                    let sx = if *flip_h { -1.0 } else { 1.0 };
+                    let sy = if *flip_v { -1.0 } else { 1.0 };
+                    if sx != 1.0 || sy != 1.0 {
+                        canvas.scale((sx, sy));
+                    }
+                    canvas.translate((-cx, -cy));
+                }
+                let skia_path = build_skia_path(paths);
+                if let Some(paint) = fill_to_paint(fill) {
+                    canvas.draw_path(&skia_path, &paint);
+                }
+                if let Some(stroke) = stroke.as_ref() {
+                    let paint = stroke_to_paint(stroke);
+                    // Only stroke subpaths whose .stroked flag is set.
+                    let strokable = build_skia_path_stroked_only(paths);
+                    canvas.draw_path(&strokable, &paint);
+                }
+                canvas.restore();
+            }
         }
     }
+}
+
+// ── Shape path helpers ──────────────────────────────────────────────────────
+
+/// Build a Skia path from all subpaths, regardless of stroke flag. Used for
+/// fill painting — OOXML fills every subpath's interior per its fill mode.
+fn build_skia_path(paths: &[SubPath]) -> Path {
+    let mut builder = PathBuilder::new();
+    builder.set_fill_type(PathFillType::Winding);
+    for sub in paths {
+        emit_subpath(&mut builder, sub);
+    }
+    builder.snapshot()
+}
+
+/// Build a Skia path limited to subpaths with `.stroked == true`.
+fn build_skia_path_stroked_only(paths: &[SubPath]) -> Path {
+    let mut builder = PathBuilder::new();
+    for sub in paths {
+        if sub.stroked {
+            emit_subpath(&mut builder, sub);
+        }
+    }
+    builder.snapshot()
+}
+
+fn emit_subpath(builder: &mut PathBuilder, sub: &SubPath) {
+    // Track the last point manually: `PathBuilder` has no `last_pt()` query,
+    // and `arc_to` needs the current pen position to derive the bounding oval.
+    let mut last_pt: (f32, f32) = (0.0, 0.0);
+    for verb in &sub.verbs {
+        match verb {
+            PathVerb::MoveTo(p) => {
+                let pt = (p.x.raw(), p.y.raw());
+                builder.move_to(pt);
+                last_pt = pt;
+            }
+            PathVerb::LineTo(p) => {
+                let pt = (p.x.raw(), p.y.raw());
+                builder.line_to(pt);
+                last_pt = pt;
+            }
+            PathVerb::QuadTo(c, p) => {
+                let pt = (p.x.raw(), p.y.raw());
+                builder.quad_to((c.x.raw(), c.y.raw()), pt);
+                last_pt = pt;
+            }
+            PathVerb::CubicTo(c1, c2, p) => {
+                let pt = (p.x.raw(), p.y.raw());
+                builder.cubic_to((c1.x.raw(), c1.y.raw()), (c2.x.raw(), c2.y.raw()), pt);
+                last_pt = pt;
+            }
+            PathVerb::ArcTo {
+                radii,
+                start_angle,
+                swing_angle,
+            } => {
+                // OOXML arcTo positions the arc on the oval centered at the
+                // current pen point offset by (-wr, -hr) — §20.1.9.3. Skia's
+                // PathBuilder::arc_to expects the bounding oval; we compute
+                // it from the current point + radii. Angles are kept in
+                // OOXML's convention (0° = 3 o'clock, clockwise +) which
+                // matches Skia.
+                let (cx, cy) = last_pt;
+                let (wr, hr) = (radii.width.raw(), radii.height.raw());
+                let oval = skia_safe::Rect::from_xywh(cx - wr, cy - hr, wr * 2.0, hr * 2.0);
+                let start_deg = start_angle.raw() as f32 / 60_000.0;
+                let sweep_deg = swing_angle.raw() as f32 / 60_000.0;
+                builder.arc_to(oval, start_deg, sweep_deg, false);
+                // Update last point to the arc's end position.
+                let end_rad = (start_deg + sweep_deg).to_radians();
+                last_pt = (cx + wr * end_rad.cos(), cy + hr * end_rad.sin());
+            }
+            PathVerb::Close => {
+                builder.close();
+            }
+        }
+    }
+}
+
+fn fill_to_paint(fill: &ResolvedFill) -> Option<Paint> {
+    match fill {
+        ResolvedFill::None => None,
+        ResolvedFill::Solid(color) => {
+            let mut paint = Paint::default();
+            paint.set_anti_alias(true);
+            paint.set_style(skia_safe::PaintStyle::Fill);
+            paint.set_color4f(rgba_to_color4f(*color), None);
+            Some(paint)
+        }
+        ResolvedFill::Gradient(_) => {
+            log::warn!("paint: gradient fill not yet rendered (Tier 2)");
+            None
+        }
+        ResolvedFill::Blip(_) => {
+            log::warn!("paint: blip fill not yet rendered (Tier 2)");
+            None
+        }
+        ResolvedFill::Pattern(_) => {
+            log::warn!("paint: pattern fill not yet rendered (Tier 3)");
+            None
+        }
+    }
+}
+
+fn stroke_to_paint(stroke: &ResolvedStroke) -> Paint {
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    paint.set_style(skia_safe::PaintStyle::Stroke);
+    paint.set_stroke_width(stroke.width.raw());
+    paint.set_color4f(rgba_to_color4f(stroke.color), None);
+    paint.set_stroke_cap(match stroke.cap {
+        ResolvedLineCap::Butt => skia_safe::PaintCap::Butt,
+        ResolvedLineCap::Round => skia_safe::PaintCap::Round,
+        ResolvedLineCap::Square => skia_safe::PaintCap::Square,
+    });
+    paint.set_stroke_join(match stroke.join {
+        ResolvedLineJoin::Round => skia_safe::PaintJoin::Round,
+        ResolvedLineJoin::Bevel => skia_safe::PaintJoin::Bevel,
+        ResolvedLineJoin::Miter => skia_safe::PaintJoin::Miter,
+    });
+    if let ResolvedDashPattern::Dashes(dashes) = &stroke.dash {
+        if !dashes.is_empty() {
+            let floats: Vec<f32> = dashes.iter().map(|p| p.raw()).collect();
+            if let Some(effect) = PathEffect::dash(&floats, 0.0) {
+                paint.set_path_effect(effect);
+            }
+        }
+    }
+    paint
+}
+
+fn rgba_to_color4f(c: Rgba) -> Color4f {
+    Color4f::new(c.r, c.g, c.b, c.a)
 }
 
 /// Decode a `MediaEntry` to a Skia image, dispatching on format.
@@ -309,6 +492,104 @@ mod tests {
 
         let pdf_bytes = render_to_pdf(&[page], &font_mgr).expect("empty text must not panic");
         assert_eq!(&pdf_bytes[..5], b"%PDF-");
+    }
+
+    // ── DrawCommand::Path ─────────────────────────────────────────────
+
+    #[test]
+    fn render_path_solid_filled_rect() {
+        use crate::model::dimension::Dimension;
+        use crate::model::PathFillMode;
+        use crate::render::layout::draw_command::{
+            ResolvedDashPattern, ResolvedFill, ResolvedLineCap, ResolvedLineJoin, ResolvedStroke,
+        };
+        use crate::render::resolve::drawing_color::Rgba;
+        use crate::render::resolve::shape_geometry::{PathVerb, SubPath};
+
+        let verbs = vec![
+            PathVerb::MoveTo(PtOffset::new(Pt::ZERO, Pt::ZERO)),
+            PathVerb::LineTo(PtOffset::new(Pt::new(100.0), Pt::ZERO)),
+            PathVerb::LineTo(PtOffset::new(Pt::new(100.0), Pt::new(50.0))),
+            PathVerb::LineTo(PtOffset::new(Pt::ZERO, Pt::new(50.0))),
+            PathVerb::Close,
+        ];
+        let page = LayoutedPage {
+            commands: vec![DrawCommand::Path {
+                origin: PtOffset::new(Pt::new(72.0), Pt::new(100.0)),
+                rotation: Dimension::new(0),
+                flip_h: false,
+                flip_v: false,
+                extent: PtSize::new(Pt::new(100.0), Pt::new(50.0)),
+                paths: vec![SubPath {
+                    verbs,
+                    fill_mode: PathFillMode::Norm,
+                    stroked: true,
+                }],
+                fill: ResolvedFill::Solid(Rgba {
+                    r: 1.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 1.0,
+                }),
+                stroke: Some(ResolvedStroke {
+                    width: Pt::new(1.0),
+                    color: Rgba::BLACK,
+                    dash: ResolvedDashPattern::Solid,
+                    cap: ResolvedLineCap::Butt,
+                    join: ResolvedLineJoin::Miter,
+                }),
+                effects: vec![],
+            }],
+            page_size: PtSize::new(Pt::new(612.0), Pt::new(792.0)),
+        };
+        let pdf = render_to_pdf(&[page], &test_font_mgr()).expect("render path");
+        assert_eq!(&pdf[..5], b"%PDF-");
+    }
+
+    #[test]
+    fn render_path_dashed_line() {
+        use crate::model::dimension::Dimension;
+        use crate::model::PathFillMode;
+        use crate::render::layout::draw_command::{
+            ResolvedDashPattern, ResolvedFill, ResolvedLineCap, ResolvedLineJoin, ResolvedStroke,
+        };
+        use crate::render::resolve::drawing_color::Rgba;
+        use crate::render::resolve::shape_geometry::{PathVerb, SubPath};
+
+        let page = LayoutedPage {
+            commands: vec![DrawCommand::Path {
+                origin: PtOffset::new(Pt::new(50.0), Pt::new(50.0)),
+                rotation: Dimension::new(0),
+                flip_h: false,
+                flip_v: false,
+                extent: PtSize::new(Pt::new(100.0), Pt::new(0.0)),
+                paths: vec![SubPath {
+                    verbs: vec![
+                        PathVerb::MoveTo(PtOffset::new(Pt::ZERO, Pt::ZERO)),
+                        PathVerb::LineTo(PtOffset::new(Pt::new(100.0), Pt::ZERO)),
+                    ],
+                    fill_mode: PathFillMode::None,
+                    stroked: true,
+                }],
+                fill: ResolvedFill::None,
+                stroke: Some(ResolvedStroke {
+                    width: Pt::new(2.0),
+                    color: Rgba {
+                        r: 0.85,
+                        g: 0.6,
+                        b: 0.2,
+                        a: 1.0,
+                    },
+                    dash: ResolvedDashPattern::Dashes(vec![Pt::new(6.0), Pt::new(3.0)]),
+                    cap: ResolvedLineCap::Round,
+                    join: ResolvedLineJoin::Round,
+                }),
+                effects: vec![],
+            }],
+            page_size: PtSize::new(Pt::new(612.0), Pt::new(792.0)),
+        };
+        let pdf = render_to_pdf(&[page], &test_font_mgr()).expect("render dashed line");
+        assert_eq!(&pdf[..5], b"%PDF-");
     }
 
     #[test]

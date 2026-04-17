@@ -2,10 +2,13 @@
 
 use std::rc::Rc;
 
+use crate::model::dimension::{Dimension, SixtieThousandthDeg};
 use crate::render::dimension::Pt;
 use crate::render::geometry::{PtLineSegment, PtOffset, PtRect, PtSize};
 use crate::render::resolve::color::RgbColor;
+use crate::render::resolve::drawing_color::Rgba;
 use crate::render::resolve::images::MediaEntry;
+use crate::render::resolve::shape_geometry::SubPath;
 
 /// A positioned drawing command — absolute page coordinates.
 #[derive(Debug, Clone)]
@@ -52,6 +55,137 @@ pub enum DrawCommand {
         position: PtOffset,
         name: String,
     },
+    /// §20.1.8 shape draw command — a resolved geometry with fill, stroke,
+    /// and optional effects. `paths` are in shape-local Pt; the painter
+    /// applies the placement transform (origin/rotation/flip).
+    Path {
+        /// Top-left placement anchor in page coordinates.
+        origin: PtOffset,
+        /// Rotation in 60000ths of a degree, around the shape's center.
+        rotation: Dimension<SixtieThousandthDeg>,
+        /// Mirror the shape horizontally before placement.
+        flip_h: bool,
+        /// Mirror the shape vertically before placement.
+        flip_v: bool,
+        /// Shape-local size — the bounding box the geometry was built for.
+        extent: PtSize,
+        /// One or more subpaths; each may be stroked and/or filled.
+        paths: Vec<SubPath>,
+        /// Fill applied to path interiors.
+        fill: ResolvedFill,
+        /// Stroke applied to path outlines (if stroked at the path level).
+        stroke: Option<ResolvedStroke>,
+        /// Post-processing effects (shadow, glow, …). Painter applies in order.
+        effects: Vec<ResolvedEffect>,
+    },
+}
+
+// ── Resolved render-ready types ─────────────────────────────────────────────
+
+/// Painter-ready fill specification. Tier 0 renders `None` and `Solid`
+/// faithfully; the other variants fall through with a one-time log.
+#[derive(Clone, Debug)]
+pub enum ResolvedFill {
+    /// No fill — path interior is transparent.
+    None,
+    /// §20.1.8.54 solidFill — a single RGBA color.
+    Solid(Rgba),
+    /// §20.1.8.33 gradFill — stops and a direction. Tier 2 renders.
+    Gradient(ResolvedGradient),
+    /// §20.1.8.14 blipFill — image fill. Tier 2 renders.
+    Blip(ResolvedBlip),
+    /// §20.1.8.47 pattFill — preset pattern with fg/bg. Tier 3 renders.
+    Pattern(ResolvedPattern),
+}
+
+/// Painter-ready stroke specification. Color/width are always honoured;
+/// dash pattern is applied as a Skia path effect; cap/join map to Skia's
+/// stroke primitives.
+#[derive(Clone, Debug)]
+pub struct ResolvedStroke {
+    pub width: Pt,
+    pub color: Rgba,
+    pub dash: ResolvedDashPattern,
+    pub cap: ResolvedLineCap,
+    pub join: ResolvedLineJoin,
+}
+
+/// §20.1.10.31 ST_LineCap, ready for Skia.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolvedLineCap {
+    Butt,
+    Round,
+    Square,
+}
+
+/// §20.1.2.2.22 EG_LineJoinProperties, ready for Skia.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ResolvedLineJoin {
+    Round,
+    Bevel,
+    Miter,
+}
+
+/// Stroke dash pattern. `Solid` renders without a dash effect; `Dashes`
+/// alternates on/off lengths in Pt.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ResolvedDashPattern {
+    Solid,
+    Dashes(Vec<Pt>),
+}
+
+/// Post-processing effects. Tier 0 carries the data only — the painter
+/// renders none of these until later tiers.
+#[derive(Clone, Debug)]
+pub enum ResolvedEffect {
+    /// §20.1.8.45 outerShdw.
+    OuterShadow {
+        blur_radius: Pt,
+        offset: PtOffset,
+        color: Rgba,
+    },
+}
+
+/// Painter-ready gradient fill — included for typing completeness; Tier 0
+/// painter logs and draws no fill. Tier 2 adds rendering.
+#[derive(Clone, Debug)]
+pub struct ResolvedGradient {
+    pub stops: Vec<GradientStopRgba>,
+    pub kind: ResolvedGradientKind,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct GradientStopRgba {
+    /// Position in `[0, 1]`.
+    pub position: f32,
+    pub color: Rgba,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ResolvedGradientKind {
+    /// Linear gradient at angle (degrees, OOXML convention: 0° = horizontal,
+    /// clockwise positive).
+    Linear { angle_deg: f32 },
+    /// Radial/path-based gradient.
+    Radial,
+}
+
+/// Painter-ready image fill — pointer to decoded bytes + source crop.
+#[derive(Clone, Debug)]
+pub struct ResolvedBlip {
+    pub data: Rc<[u8]>,
+    pub format: crate::model::ImageFormat,
+    /// Fraction of the source to crop: values in `[0, 1]` relative to the
+    /// blip's natural extent.
+    pub src_rect: Option<PtRect>,
+}
+
+/// Painter-ready pattern fill — foreground/background + preset id.
+#[derive(Clone, Debug)]
+pub struct ResolvedPattern {
+    pub preset: crate::model::PresetPatternVal,
+    pub fg: Rgba,
+    pub bg: Rgba,
 }
 
 impl DrawCommand {
@@ -78,6 +212,10 @@ impl DrawCommand {
             DrawCommand::NamedDestination { position, .. } => {
                 position.x += dx;
                 position.y += dy;
+            }
+            DrawCommand::Path { origin, .. } => {
+                origin.x += dx;
+                origin.y += dy;
             }
         }
     }
@@ -165,5 +303,29 @@ mod tests {
         let page = LayoutedPage::new(PtSize::new(Pt::new(612.0), Pt::new(792.0)));
         assert!(page.commands.is_empty());
         assert_eq!(page.page_size.width.raw(), 612.0);
+    }
+
+    #[test]
+    fn shift_y_moves_path_origin() {
+        use crate::model::dimension::Dimension;
+
+        let mut cmd = DrawCommand::Path {
+            origin: PtOffset::new(Pt::new(10.0), Pt::new(20.0)),
+            rotation: Dimension::new(0),
+            flip_h: false,
+            flip_v: false,
+            extent: PtSize::new(Pt::new(100.0), Pt::new(50.0)),
+            paths: vec![],
+            fill: ResolvedFill::None,
+            stroke: None,
+            effects: vec![],
+        };
+        cmd.shift_y(Pt::new(7.5));
+        if let DrawCommand::Path { origin, .. } = cmd {
+            assert_eq!(origin.y.raw(), 27.5);
+            assert_eq!(origin.x.raw(), 10.0);
+        } else {
+            panic!();
+        }
     }
 }
