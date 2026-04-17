@@ -4,13 +4,19 @@
 
 mod anchor;
 mod color;
+mod effect;
+mod fill;
 mod inline;
 mod picture;
 mod shape;
+mod stroke;
 
 pub use anchor::parse_anchor_image;
 pub use color::parse_color_choice;
+pub use effect::parse_effect_list;
+pub use fill::parse_drawing_fill;
 pub use inline::parse_inline_image;
+pub use stroke::parse_outline;
 
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;

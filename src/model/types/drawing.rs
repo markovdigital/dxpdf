@@ -4,6 +4,7 @@ use crate::model::dimension::{Dimension, Emu, SixtieThousandthDeg, ThousandthPer
 use crate::model::geometry::{EdgeInsets, Offset, Size};
 
 use super::content::Block;
+use super::drawing_color::DrawingColor;
 use super::identifiers::RelId;
 
 /// Format of an embedded image, detected from the OOXML relationship target path
@@ -246,7 +247,9 @@ pub struct PicLocks {
     pub no_grp: Option<bool>,
 }
 
-/// §20.1.8.14 pic:blipFill — picture fill properties.
+/// §20.1.8.14 CT_BlipFillProperties — image fill. Used both as a picture
+/// content (via `Picture.blip_fill`) and as an `EG_FillProperties` choice
+/// inside shape `spPr`/outline fills.
 #[derive(Clone, Debug)]
 pub struct BlipFill {
     pub rotate_with_shape: Option<bool>,
@@ -255,8 +258,36 @@ pub struct BlipFill {
     pub blip: Option<Blip>,
     /// §20.1.10.48: source rectangle (crop).
     pub src_rect: Option<RelativeRect>,
-    /// §20.1.8.56: stretch fill mode.
-    pub stretch: Option<StretchFill>,
+    /// §20.1.8.14 choice: stretch, tile, or neither.
+    pub fill_kind: BlipFillKind,
+}
+
+/// §20.1.8.14 fill presentation — stretch into fillRect or tile.
+///
+/// Per spec the choice is optional; `Unspecified` is Word's default
+/// (equivalent to `Stretch` with no `fillRect`).
+#[derive(Clone, Debug)]
+pub enum BlipFillKind {
+    Stretch(StretchFill),
+    Tile(TileFill),
+    Unspecified,
+}
+
+/// §20.1.8.58 CT_TileInfoProperties — tiled blip fill parameters.
+#[derive(Clone, Copy, Debug)]
+pub struct TileFill {
+    /// Translate X in EMU.
+    pub tx: Option<Dimension<Emu>>,
+    /// Translate Y in EMU.
+    pub ty: Option<Dimension<Emu>>,
+    /// Scale X (1000ths of a percent).
+    pub sx: Option<Dimension<ThousandthPercent>>,
+    /// Scale Y (1000ths of a percent).
+    pub sy: Option<Dimension<ThousandthPercent>>,
+    /// §20.1.10.86: tile flip mode.
+    pub flip: Option<TileFlipMode>,
+    /// §20.1.10.53: alignment of the tiled blip within the fill rect.
+    pub alignment: Option<RectAlignment>,
 }
 
 /// §20.1.8.13 a:blip — reference to image data.
@@ -310,6 +341,8 @@ pub struct ShapeProperties {
     pub fill: Option<DrawingFill>,
     /// §20.1.2.2.24: outline/line properties.
     pub outline: Option<Outline>,
+    /// §20.1.8.24: shape effects, in document order.
+    pub effect_list: Option<EffectList>,
 }
 
 /// §20.1.7.6 CT_Transform2D — 2D transform.
@@ -550,18 +583,170 @@ pub enum BlackWhiteMode {
     White,
 }
 
-/// Drawing fill type.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// §20.1.8 EG_FillProperties — fill choice for shapes, outlines, overlays.
+///
+/// Every base fill carries its own structure; pattern of use is
+/// `match fill { DrawingFill::Solid(color) => …, … }`.
+#[derive(Clone, Debug)]
 pub enum DrawingFill {
-    /// §20.1.8.44: no fill.
-    NoFill,
-    // SolidFill, GradFill, etc. — extend as needed.
+    /// §20.1.8.44 noFill — transparent.
+    None,
+    /// §20.1.8.54 solidFill — single color.
+    Solid(DrawingColor),
+    /// §20.1.8.33 gradFill — gradient with stops and a shade shape.
+    Gradient(GradientFill),
+    /// §20.1.8.14 blipFill — image fill.
+    Blip(BlipFill),
+    /// §20.1.8.47 pattFill — preset pattern with fg/bg colors.
+    Pattern(PatternFill),
+    /// §20.1.8.35 grpFill — inherit fill from the enclosing group.
+    Group,
 }
 
-/// §20.1.2.2.24 CT_LineProperties — outline/line properties.
+/// §20.1.8.33 CT_GradientFillProperties.
+#[derive(Clone, Debug)]
+pub struct GradientFill {
+    /// §20.1.8.37 gsLst — gradient stops, in document order.
+    pub stops: Vec<GradientStop>,
+    /// The gradient shape: linear at an angle, or a path-based (radial etc.).
+    pub shade_properties: GradientShadeProperties,
+    /// §20.1.10.86 @flip — tile flip mode.
+    pub flip: Option<TileFlipMode>,
+    /// §20.1.8.33 @rotWithShape — rotate with the containing shape.
+    pub rot_with_shape: Option<bool>,
+    /// §20.1.8.56 tileRect — source rect within the gradient's conceptual area.
+    pub tile_rect: Option<RelativeRect>,
+}
+
+/// §20.1.8.38 CT_GradientStop.
+#[derive(Clone, Debug)]
+pub struct GradientStop {
+    /// §20.1.10.42 @pos — stop position in 1000ths of a percent [0, 100000].
+    pub position: Dimension<ThousandthPercent>,
+    pub color: DrawingColor,
+}
+
+/// §20.1.8.33 EG_ShadeProperties — the gradient's geometric shape.
+#[derive(Clone, Debug)]
+pub enum GradientShadeProperties {
+    /// §20.1.8.41 lin — linear gradient at `angle`.
+    Linear {
+        /// Angle in 60000ths of a degree.
+        angle: Dimension<SixtieThousandthDeg>,
+        /// §20.1.8.41 @scaled — scale gradient with shape.
+        scaled: Option<bool>,
+    },
+    /// §20.1.8.46 path — radial / shape / rect gradient.
+    Path {
+        path_type: PathShadeType,
+        fill_to_rect: Option<RelativeRect>,
+    },
+}
+
+/// §20.1.10.46 ST_PathShadeType.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PathShadeType {
+    Shape,
+    Circle,
+    Rect,
+}
+
+/// §20.1.10.86 ST_TileFlipMode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TileFlipMode {
+    None,
+    X,
+    Y,
+    Xy,
+}
+
+/// §20.1.8.47 CT_PatternFillProperties.
+#[derive(Clone, Debug)]
+pub struct PatternFill {
+    /// §20.1.10.50 @prst — preset pattern.
+    pub preset: PresetPatternVal,
+    /// §20.1.8.30 fgClr — foreground color.
+    pub fg_color: Option<DrawingColor>,
+    /// §20.1.8.10 bgClr — background color.
+    pub bg_color: Option<DrawingColor>,
+}
+
+/// §20.1.10.50 ST_PresetPatternVal — 48 preset pattern names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PresetPatternVal {
+    Pct5,
+    Pct10,
+    Pct20,
+    Pct25,
+    Pct30,
+    Pct40,
+    Pct50,
+    Pct60,
+    Pct70,
+    Pct75,
+    Pct80,
+    Pct90,
+    Horz,
+    Vert,
+    LtHorz,
+    LtVert,
+    DkHorz,
+    DkVert,
+    NarHorz,
+    NarVert,
+    DashHorz,
+    DashVert,
+    Cross,
+    DnDiag,
+    UpDiag,
+    LtDnDiag,
+    LtUpDiag,
+    DkDnDiag,
+    DkUpDiag,
+    WdDnDiag,
+    WdUpDiag,
+    DashDnDiag,
+    DashUpDiag,
+    DiagCross,
+    SmCheck,
+    LgCheck,
+    SmGrid,
+    LgGrid,
+    DotGrid,
+    SmConfetti,
+    LgConfetti,
+    HorzBrick,
+    DiagBrick,
+    SolidDmnd,
+    OpenDmnd,
+    DotDmnd,
+    Plaid,
+    Sphere,
+    Weave,
+    DivotShingle,
+    Trellis,
+    ZigZag,
+    Wave,
+}
+
+/// §20.1.10.53 ST_RectAlignment — nine-point rect alignment grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RectAlignment {
+    Tl,
+    T,
+    Tr,
+    L,
+    Ctr,
+    R,
+    Bl,
+    B,
+    Br,
+}
+
+/// §20.1.2.2.24 CT_LineProperties — full shape outline specification.
 #[derive(Clone, Debug)]
 pub struct Outline {
-    /// Line width in EMUs.
+    /// §20.1.2.2.24 @w — line width in EMUs.
     pub width: Option<Dimension<Emu>>,
     /// §20.1.10.31: line cap style.
     pub cap: Option<LineCap>,
@@ -569,8 +754,88 @@ pub struct Outline {
     pub compound: Option<CompoundLine>,
     /// §20.1.10.39: pen alignment.
     pub alignment: Option<PenAlignment>,
-    /// Line fill.
+    /// §20.1.2.2.24 EG_LineFillProperties — outlines use any fill choice.
     pub fill: Option<DrawingFill>,
+    /// §20.1.8.25: preset or custom dash pattern.
+    pub dash: Option<LineDash>,
+    /// §20.1.2.2.22: line join style.
+    pub join: Option<LineJoin>,
+    /// §20.1.2.2.12 headEnd — arrow at the line's head (start).
+    pub head_end: Option<LineEnd>,
+    /// §20.1.2.2.46 tailEnd — arrow at the line's tail (end).
+    pub tail_end: Option<LineEnd>,
+}
+
+/// §20.1.8.25 CT_LineDashProperties — preset pattern or custom stop list.
+#[derive(Clone, Debug)]
+pub enum LineDash {
+    /// §20.1.10.48: named preset pattern.
+    Preset(PresetLineDashVal),
+    /// §20.1.8.26 custDash — sequence of dash/space pairs.
+    Custom(Vec<DashStop>),
+}
+
+/// §20.1.10.48 ST_PresetLineDashVal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PresetLineDashVal {
+    Solid,
+    Dot,
+    Dash,
+    LgDash,
+    DashDot,
+    LgDashDot,
+    LgDashDotDot,
+    SysDash,
+    SysDot,
+    SysDashDot,
+    SysDashDotDot,
+}
+
+/// §20.1.8.27 CT_DashStop — one dash/space pair in a custom dash pattern.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DashStop {
+    pub dash: Dimension<ThousandthPercent>,
+    pub space: Dimension<ThousandthPercent>,
+}
+
+/// §20.1.2.2.22 EG_LineJoinProperties — line join style.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LineJoin {
+    /// §20.1.8.42 round.
+    Round,
+    /// §20.1.8.9 bevel.
+    Bevel,
+    /// §20.1.8.43 miter with optional limit (1000ths of a percent).
+    Miter {
+        limit: Option<Dimension<ThousandthPercent>>,
+    },
+}
+
+/// §20.1.2.2.12 / §20.1.2.2.46 CT_LineEndProperties — arrow head / tail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineEnd {
+    pub kind: LineEndType,
+    pub width: LineEndSize,
+    pub length: LineEndSize,
+}
+
+/// §20.1.10.33 ST_LineEndType.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LineEndType {
+    None,
+    Triangle,
+    Stealth,
+    Diamond,
+    Oval,
+    Arrow,
+}
+
+/// §20.1.10.34 ST_LineEndWidth / §20.1.10.35 ST_LineEndLength (shared enum).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LineEndSize {
+    Sm,
+    Med,
+    Lg,
 }
 
 /// §20.1.10.31 ST_LineCap.
@@ -705,4 +970,155 @@ pub enum WrapText {
     Left,
     Right,
     Largest,
+}
+
+// ── §20.1.8.24 CT_EffectList — shape effects ─────────────────────────────────
+
+/// §20.1.8.24 CT_EffectList — an ordered sequence of shape effects.
+///
+/// Each variant is applied in order. The spec also defines §20.1.8.25
+/// CT_EffectContainer (`effectDag`) for arbitrary compositing; our parser
+/// accepts only `effectLst` and logs-and-skips `effectDag` for Tier 0.
+#[derive(Clone, Debug, Default)]
+pub struct EffectList {
+    pub effects: Vec<Effect>,
+}
+
+/// §20.1.8 — effect variants.
+#[derive(Clone, Debug)]
+pub enum Effect {
+    /// §20.1.8.15.
+    Blur(BlurEffect),
+    /// §20.1.8.29.
+    FillOverlay(FillOverlayEffect),
+    /// §20.1.8.32.
+    Glow(GlowEffect),
+    /// §20.1.8.40.
+    InnerShdw(InnerShadowEffect),
+    /// §20.1.8.45.
+    OuterShdw(OuterShadowEffect),
+    /// §20.1.8.49.
+    PrstShdw(PresetShadowEffect),
+    /// §20.1.8.50.
+    Reflection(ReflectionEffect),
+    /// §20.1.8.53.
+    SoftEdge(SoftEdgeEffect),
+}
+
+/// §20.1.8.15 CT_BlurEffect.
+#[derive(Clone, Copy, Debug)]
+pub struct BlurEffect {
+    pub radius: Dimension<Emu>,
+    pub grow: Option<bool>,
+}
+
+/// §20.1.8.29 CT_FillOverlayEffect.
+#[derive(Clone, Debug)]
+pub struct FillOverlayEffect {
+    pub fill: DrawingFill,
+    pub blend: BlendMode,
+}
+
+/// §20.1.8.32 CT_GlowEffect.
+#[derive(Clone, Debug)]
+pub struct GlowEffect {
+    pub radius: Dimension<Emu>,
+    pub color: DrawingColor,
+}
+
+/// §20.1.8.40 CT_InnerShadowEffect.
+#[derive(Clone, Debug)]
+pub struct InnerShadowEffect {
+    pub blur_radius: Dimension<Emu>,
+    pub distance: Dimension<Emu>,
+    pub direction: Dimension<SixtieThousandthDeg>,
+    pub color: DrawingColor,
+}
+
+/// §20.1.8.45 CT_OuterShadowEffect.
+///
+/// `sx/sy` are horizontal/vertical scale factors (1000ths of a percent);
+/// `kx/ky` are skew angles (60000ths of a degree). All default to their
+/// parent attribute defaults when absent.
+#[derive(Clone, Debug)]
+pub struct OuterShadowEffect {
+    pub blur_radius: Dimension<Emu>,
+    pub distance: Dimension<Emu>,
+    pub direction: Dimension<SixtieThousandthDeg>,
+    pub sx: Dimension<ThousandthPercent>,
+    pub sy: Dimension<ThousandthPercent>,
+    pub kx: Dimension<SixtieThousandthDeg>,
+    pub ky: Dimension<SixtieThousandthDeg>,
+    pub alignment: RectAlignment,
+    pub rot_with_shape: Option<bool>,
+    pub color: DrawingColor,
+}
+
+/// §20.1.8.49 CT_PresetShadowEffect.
+#[derive(Clone, Debug)]
+pub struct PresetShadowEffect {
+    pub preset: PresetShadowVal,
+    pub distance: Dimension<Emu>,
+    pub direction: Dimension<SixtieThousandthDeg>,
+    pub color: DrawingColor,
+}
+
+/// §20.1.10.51 ST_PresetShadowVal — 20 shadow presets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PresetShadowVal {
+    Shdw1,
+    Shdw2,
+    Shdw3,
+    Shdw4,
+    Shdw5,
+    Shdw6,
+    Shdw7,
+    Shdw8,
+    Shdw9,
+    Shdw10,
+    Shdw11,
+    Shdw12,
+    Shdw13,
+    Shdw14,
+    Shdw15,
+    Shdw16,
+    Shdw17,
+    Shdw18,
+    Shdw19,
+    Shdw20,
+}
+
+/// §20.1.8.50 CT_ReflectionEffect.
+#[derive(Clone, Copy, Debug)]
+pub struct ReflectionEffect {
+    pub blur_radius: Dimension<Emu>,
+    pub start_alpha: Dimension<ThousandthPercent>,
+    pub start_pos: Dimension<ThousandthPercent>,
+    pub end_alpha: Dimension<ThousandthPercent>,
+    pub end_pos: Dimension<ThousandthPercent>,
+    pub distance: Dimension<Emu>,
+    pub direction: Dimension<SixtieThousandthDeg>,
+    pub fade_direction: Dimension<SixtieThousandthDeg>,
+    pub sx: Dimension<ThousandthPercent>,
+    pub sy: Dimension<ThousandthPercent>,
+    pub kx: Dimension<SixtieThousandthDeg>,
+    pub ky: Dimension<SixtieThousandthDeg>,
+    pub alignment: RectAlignment,
+    pub rot_with_shape: Option<bool>,
+}
+
+/// §20.1.8.53 CT_SoftEdgesEffect.
+#[derive(Clone, Copy, Debug)]
+pub struct SoftEdgeEffect {
+    pub radius: Dimension<Emu>,
+}
+
+/// §20.1.10.11 ST_BlendMode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BlendMode {
+    Over,
+    Mult,
+    Screen,
+    Darken,
+    Lighten,
 }

@@ -177,7 +177,7 @@ fn parse_blip_fill(
     let dpi = xml::optional_attr_u32(start, b"dpi")?;
     let mut blip = None;
     let mut src_rect = None;
-    let mut stretch = None;
+    let mut fill_kind = BlipFillKind::Unspecified;
 
     loop {
         match xml::next_event(reader, buf)? {
@@ -189,7 +189,11 @@ fn parse_blip_fill(
                         blip = Some(parse_blip(e, reader, buf)?);
                     }
                     b"stretch" => {
-                        stretch = Some(parse_stretch(reader, buf)?);
+                        fill_kind = BlipFillKind::Stretch(parse_stretch(reader, buf)?);
+                    }
+                    b"tile" => {
+                        fill_kind = BlipFillKind::Tile(parse_tile(e)?);
+                        xml::skip_to_end(reader, buf, b"tile")?;
                     }
                     _ => {
                         xml::warn_unsupported_element("blipFill", local);
@@ -207,6 +211,9 @@ fn parse_blip_fill(
                     b"srcRect" => {
                         src_rect = Some(parse_relative_rect(e)?);
                     }
+                    b"tile" => {
+                        fill_kind = BlipFillKind::Tile(parse_tile(e)?);
+                    }
                     _ => xml::warn_unsupported_element("blipFill", local),
                 }
             }
@@ -221,8 +228,58 @@ fn parse_blip_fill(
         dpi,
         blip,
         src_rect,
-        stretch,
+        fill_kind,
     })
+}
+
+// ── a:tile (§20.1.8.58) ────────────────────────────────────────────────────
+
+fn parse_tile(e: &BytesStart<'_>) -> Result<TileFill> {
+    Ok(TileFill {
+        tx: xml::optional_attr_i64(e, b"tx")?.map(Dimension::new),
+        ty: xml::optional_attr_i64(e, b"ty")?.map(Dimension::new),
+        sx: xml::optional_attr_i64(e, b"sx")?.map(Dimension::new),
+        sy: xml::optional_attr_i64(e, b"sy")?.map(Dimension::new),
+        flip: xml::optional_attr(e, b"flip")?
+            .map(|s| parse_tile_flip_mode(&s))
+            .transpose()?,
+        alignment: xml::optional_attr(e, b"algn")?
+            .map(|s| parse_rect_alignment(&s))
+            .transpose()?,
+    })
+}
+
+fn parse_tile_flip_mode(val: &str) -> Result<TileFlipMode> {
+    match val {
+        "none" => Ok(TileFlipMode::None),
+        "x" => Ok(TileFlipMode::X),
+        "y" => Ok(TileFlipMode::Y),
+        "xy" => Ok(TileFlipMode::Xy),
+        other => Err(ParseError::InvalidAttributeValue {
+            attr: "flip".into(),
+            value: other.into(),
+            reason: "expected value per §20.1.10.86 ST_TileFlipMode".into(),
+        }),
+    }
+}
+
+fn parse_rect_alignment(val: &str) -> Result<RectAlignment> {
+    match val {
+        "tl" => Ok(RectAlignment::Tl),
+        "t" => Ok(RectAlignment::T),
+        "tr" => Ok(RectAlignment::Tr),
+        "l" => Ok(RectAlignment::L),
+        "ctr" => Ok(RectAlignment::Ctr),
+        "r" => Ok(RectAlignment::R),
+        "bl" => Ok(RectAlignment::Bl),
+        "b" => Ok(RectAlignment::B),
+        "br" => Ok(RectAlignment::Br),
+        other => Err(ParseError::InvalidAttributeValue {
+            attr: "algn".into(),
+            value: other.into(),
+            reason: "expected value per §20.1.10.53 ST_RectAlignment".into(),
+        }),
+    }
 }
 
 // ── a:blip (§20.1.8.13) ────────────────────────────────────────────────────

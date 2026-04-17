@@ -13,3 +13,4 @@ Technical reference for DOCX-to-PDF rendering decisions in dxpdf, organized by O
 - [Line Spacing](line-spacing.md) — §17.3.1.33 line/lineRule, Auto/Exact/AtLeast modes
 - [DrawingML Plan](drawingml-plan.md) — §20 shapes/fills/outlines/effects — tiered implementation plan, recommended cut-point, architectural decisions
 - [DrawingML Tier 0](drawingml-tier-0.md) — foundational infrastructure: color ADT, fills/strokes/effects, geometry generator, FloatingShape — standalone blueprint
+- [DrawingML Tier 0 — Phase 2](drawingml-tier-0-phase-2.md) — detailed plan for fill / stroke / effect ADTs + parsers
