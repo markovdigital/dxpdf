@@ -1,274 +1,241 @@
 //! Parser for `word/numbering.xml` — parses definitions as-is, no resolution.
+//!
+//! Two-pass approach:
+//! 1. `extract_pic_bullet_picts` — event-driven scan that pairs each
+//!    `<w:numPicBullet w:numPicBulletId="N">` with its inner `<w:pict>`,
+//!    parsed via the existing VML parser.
+//! 2. `from_xml::<NumberingXml>` — serde pass over the rest of the document.
+//!
+//! Step 2's output is merged with step 1's pict map to produce the final
+//! `NumberingDefinitions`. VML parsing stays untouched until Phase 6.
+
+use std::collections::HashMap;
 
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use serde::Deserialize;
 
 use crate::docx::error::Result;
-use crate::docx::model::*;
+use crate::docx::model::{
+    AbstractNumId, AbstractNumbering, Alignment, Indentation, NumId, NumPicBullet,
+    NumPicBulletId, NumberFormat, NumberingDefinitions, NumberingInstance,
+    NumberingLevelDefinition, Pict, RunProperties,
+};
+use crate::docx::parse::primitives::st_enums::{StJc, StNumberFormat};
+use crate::docx::parse::properties::schema::paragraph::PPrXml;
+use crate::docx::parse::properties::schema::run::RPrXml;
+use crate::docx::parse::serde_xml::from_xml;
+use crate::docx::parse::vml;
 use crate::docx::xml;
 
-use super::{properties, vml};
-
-/// Parse `word/numbering.xml`. Enters `<w:numbering>`, parses until `</w:numbering>`.
 pub fn parse_numbering(data: &[u8]) -> Result<NumberingDefinitions> {
-    let mut reader = Reader::from_reader(data);
-    reader.config_mut().trim_text(true);
-    let mut buf = Vec::new();
-    let mut defs = NumberingDefinitions::default();
-
-    // Find <w:numbering> root element.
-    loop {
-        match xml::next_event(&mut reader, &mut buf)? {
-            Event::Start(ref e) if xml::local_name(e.name().as_ref()) == b"numbering" => break,
-            Event::Eof => return Ok(defs),
-            _ => {}
+    if data.is_empty() {
+        return Ok(NumberingDefinitions::default());
+    }
+    let pict_map = extract_pic_bullet_picts(data)?;
+    let schema: NumberingXml = from_xml(data)?;
+    let mut defs: NumberingDefinitions = schema.into();
+    for (id, pict) in pict_map {
+        if let Some(bullet) = defs.pic_bullets.get_mut(&id) {
+            bullet.pict = Some(pict);
         }
     }
-
-    // Parse content scoped to </w:numbering>.
-    loop {
-        match xml::next_event(&mut reader, &mut buf)? {
-            Event::Start(ref e) => {
-                let qn = e.name();
-                let local = xml::local_name(qn.as_ref());
-                match local {
-                    b"abstractNum" => {
-                        if let Some(id) = xml::optional_attr_i64(e, b"abstractNumId")? {
-                            let levels = parse_abstract_num(&mut reader, &mut buf)?;
-                            defs.abstract_nums
-                                .insert(AbstractNumId::new(id), AbstractNumbering { levels });
-                        }
-                    }
-                    b"num" => {
-                        if let Some(num_id) = xml::optional_attr_i64(e, b"numId")? {
-                            let instance = parse_num_instance(&mut reader, &mut buf)?;
-                            defs.numbering_instances
-                                .insert(NumId::new(num_id), instance);
-                        }
-                    }
-                    b"numPicBullet" => {
-                        if let Some(id) = xml::optional_attr_i64(e, b"numPicBulletId")? {
-                            let bullet_id = NumPicBulletId::new(id);
-                            let pic_bullet =
-                                parse_num_pic_bullet(bullet_id, &mut reader, &mut buf)?;
-                            defs.pic_bullets.insert(bullet_id, pic_bullet);
-                        }
-                    }
-                    _ => xml::warn_unsupported_element("numbering", local),
-                }
-            }
-            Event::End(ref e) if xml::local_name(e.name().as_ref()) == b"numbering" => break,
-            Event::Eof => return Err(xml::unexpected_eof(b"numbering")),
-            _ => {}
-        }
-    }
-
     Ok(defs)
 }
 
-fn parse_abstract_num(
-    reader: &mut Reader<&[u8]>,
-    buf: &mut Vec<u8>,
-) -> Result<Vec<NumberingLevelDefinition>> {
-    let mut levels = Vec::new();
+/// Scan raw XML for `<w:numPicBullet w:numPicBulletId="N">…<w:pict>…</w:pict>…</w:numPicBullet>`
+/// and parse each inner pict via the legacy VML parser. Returns `{ id → Pict }`.
+fn extract_pic_bullet_picts(data: &[u8]) -> Result<HashMap<NumPicBulletId, Pict>> {
+    let mut reader = Reader::from_reader(data);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut out = HashMap::new();
 
     loop {
-        match xml::next_event(reader, buf)? {
-            Event::Start(ref e) if xml::local_name(e.name().as_ref()) == b"lvl" => {
-                if let Some(ilvl) = xml::optional_attr_u32(e, b"ilvl")? {
-                    levels.push(parse_level(reader, buf, ilvl as u8)?);
+        match xml::next_event(&mut reader, &mut buf)? {
+            Event::Start(ref e) if xml::local_name(e.name().as_ref()) == b"numPicBullet" => {
+                let Some(id) = xml::optional_attr_i64(e, b"numPicBulletId")? else {
+                    xml::skip_to_end(&mut reader, &mut buf, b"numPicBullet")?;
+                    continue;
+                };
+                if let Some(pict) = find_pict_within(&mut reader, &mut buf)? {
+                    out.insert(NumPicBulletId::new(id), pict);
                 }
             }
-            Event::End(ref e) if xml::local_name(e.name().as_ref()) == b"abstractNum" => break,
-            Event::Eof => return Err(xml::unexpected_eof(b"abstractNum")),
+            Event::Eof => break,
             _ => {}
         }
     }
-
-    Ok(levels)
+    Ok(out)
 }
 
-fn parse_level(
-    reader: &mut Reader<&[u8]>,
-    buf: &mut Vec<u8>,
-    ilvl: u8,
-) -> Result<NumberingLevelDefinition> {
-    let mut format: Option<NumberFormat> = None;
-    let mut level_text = String::new();
-    let mut start: Option<u32> = None;
-    let mut justification: Option<Alignment> = None;
-    let mut indentation: Option<Indentation> = None;
-    let mut run_properties: Option<RunProperties> = None;
-    let mut lvl_pic_bullet_id: Option<NumPicBulletId> = None;
-
+/// Inside a `<w:numPicBullet>`, consume events until `</w:numPicBullet>`.
+/// If a `<w:pict>` Start is seen, hand off to `vml::parse_pict`.
+fn find_pict_within(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<Option<Pict>> {
+    let mut found: Option<Pict> = None;
     loop {
         match xml::next_event(reader, buf)? {
             Event::Start(ref e) => {
-                let qn = e.name();
-                let local = xml::local_name(qn.as_ref());
-                match local {
-                    b"pPr" => {
-                        let parsed = properties::parse_paragraph_properties(reader, buf)?;
-                        indentation = parsed.properties.indentation;
-                    }
-                    b"rPr" => {
-                        let (rpr, _) = properties::parse_run_properties(reader, buf)?;
-                        run_properties = Some(rpr);
-                    }
-                    _ => xml::warn_unsupported_element("numbering-level", local),
-                }
-            }
-            Event::Empty(ref e) => {
-                let qn = e.name();
-                let local = xml::local_name(qn.as_ref());
-                match local {
-                    b"numFmt" => {
-                        if let Some(val) = xml::optional_attr(e, b"val")? {
-                            format = Some(parse_number_format(&val)?);
-                        }
-                    }
-                    b"lvlText" => {
-                        if let Some(val) = xml::optional_attr(e, b"val")? {
-                            level_text = val;
-                        }
-                    }
-                    b"start" => {
-                        start = xml::optional_attr_u32(e, b"val")?;
-                    }
-                    b"lvlJc" => {
-                        if let Some(val) = xml::optional_attr(e, b"val")? {
-                            justification = Some(properties::parse_alignment(&val)?);
-                        }
-                    }
-                    b"lvlPicBulletId" => {
-                        lvl_pic_bullet_id =
-                            xml::optional_attr_i64(e, b"val")?.map(NumPicBulletId::new);
-                    }
-                    _ => xml::warn_unsupported_element("numbering-level", local),
-                }
-            }
-            Event::End(ref e) if xml::local_name(e.name().as_ref()) == b"lvl" => break,
-            Event::Eof => return Err(xml::unexpected_eof(b"lvl")),
-            _ => {}
-        }
-    }
-
-    Ok(NumberingLevelDefinition {
-        level: ilvl,
-        format,
-        level_text,
-        start,
-        justification,
-        indentation,
-        run_properties,
-        lvl_pic_bullet_id,
-    })
-}
-
-fn parse_num_instance(reader: &mut Reader<&[u8]>, buf: &mut Vec<u8>) -> Result<NumberingInstance> {
-    let mut abstract_num_id = AbstractNumId::new(0);
-    let mut overrides = Vec::new();
-
-    loop {
-        match xml::next_event(reader, buf)? {
-            Event::Start(ref e) => {
-                let qn = e.name();
-                let local = xml::local_name(qn.as_ref());
-                if local == b"lvlOverride" {
-                    if let Some(ilvl) = xml::optional_attr_u32(e, b"ilvl")? {
-                        if let Some(level) = parse_lvl_override(reader, buf, ilvl as u8)? {
-                            overrides.push(level);
-                        }
-                    }
-                }
-            }
-            Event::Empty(ref e) if xml::local_name(e.name().as_ref()) == b"abstractNumId" => {
-                if let Some(val) = xml::optional_attr_i64(e, b"val")? {
-                    abstract_num_id = AbstractNumId::new(val);
-                }
-            }
-            Event::End(ref e) if xml::local_name(e.name().as_ref()) == b"num" => break,
-            Event::Eof => return Err(xml::unexpected_eof(b"num")),
-            _ => {}
-        }
-    }
-
-    Ok(NumberingInstance {
-        abstract_num_id,
-        level_overrides: overrides,
-    })
-}
-
-fn parse_lvl_override(
-    reader: &mut Reader<&[u8]>,
-    buf: &mut Vec<u8>,
-    ilvl: u8,
-) -> Result<Option<NumberingLevelDefinition>> {
-    let mut result: Option<NumberingLevelDefinition> = None;
-
-    loop {
-        match xml::next_event(reader, buf)? {
-            Event::Start(ref e) if xml::local_name(e.name().as_ref()) == b"lvl" => {
-                result = Some(parse_level(reader, buf, ilvl)?);
-            }
-            Event::End(ref e) if xml::local_name(e.name().as_ref()) == b"lvlOverride" => break,
-            Event::Eof => return Err(xml::unexpected_eof(b"lvlOverride")),
-            _ => {}
-        }
-    }
-
-    Ok(result)
-}
-
-/// §17.9.21: parse `w:numPicBullet` — picture bullet definition.
-fn parse_num_pic_bullet(
-    id: NumPicBulletId,
-    reader: &mut Reader<&[u8]>,
-    buf: &mut Vec<u8>,
-) -> Result<NumPicBullet> {
-    let mut pict = None;
-
-    loop {
-        match xml::next_event(reader, buf)? {
-            Event::Start(ref e) => {
-                let qn = e.name();
-                let local = xml::local_name(qn.as_ref());
-                match local {
-                    b"pict" => {
-                        pict = Some(vml::parse_pict(reader, buf)?);
-                    }
-                    _ => {
-                        xml::warn_unsupported_element("numPicBullet", local);
-                        xml::skip_to_end(reader, buf, local)?;
-                    }
+                let name = e.name();
+                let local_owned: Vec<u8> = xml::local_name(name.as_ref()).to_vec();
+                if local_owned == b"pict" && found.is_none() {
+                    found = Some(vml::parse_pict(reader, buf)?);
+                } else {
+                    xml::skip_to_end(reader, buf, &local_owned)?;
                 }
             }
             Event::End(ref e) if xml::local_name(e.name().as_ref()) == b"numPicBullet" => break,
-            Event::Eof => return Err(xml::unexpected_eof(b"numPicBullet")),
+            Event::Eof => break,
             _ => {}
         }
     }
-
-    Ok(NumPicBullet { id, pict })
+    Ok(found)
 }
 
-/// §17.18.59 ST_NumberFormat
-fn parse_number_format(val: &str) -> Result<NumberFormat> {
-    match val {
-        "decimal" => Ok(NumberFormat::Decimal),
-        "upperRoman" => Ok(NumberFormat::UpperRoman),
-        "lowerRoman" => Ok(NumberFormat::LowerRoman),
-        "upperLetter" => Ok(NumberFormat::UpperLetter),
-        "lowerLetter" => Ok(NumberFormat::LowerLetter),
-        "bullet" => Ok(NumberFormat::Bullet),
-        "ordinal" => Ok(NumberFormat::Ordinal),
-        "cardinalText" => Ok(NumberFormat::CardinalText),
-        "ordinalText" => Ok(NumberFormat::OrdinalText),
-        "none" => Ok(NumberFormat::None),
-        other => Err(crate::docx::error::ParseError::InvalidAttributeValue {
-            attr: "numFmt/val".into(),
-            value: other.into(),
-            reason: "unsupported value per OOXML spec".into(),
-        }),
+// ── serde schema ──────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Default)]
+struct NumberingXml {
+    #[serde(rename = "abstractNum", default)]
+    abstract_nums: Vec<AbstractNumXml>,
+    #[serde(rename = "num", default)]
+    nums: Vec<NumXml>,
+    /// Picture bullets are parsed structurally here (for id resolution)
+    /// but their `<w:pict>` contents are filled in by the pre-pass.
+    #[serde(rename = "numPicBullet", default)]
+    num_pic_bullets: Vec<NumPicBulletXml>,
+}
+
+#[derive(Deserialize)]
+struct AbstractNumXml {
+    #[serde(rename = "@abstractNumId")]
+    abstract_num_id: i64,
+    #[serde(rename = "lvl", default)]
+    levels: Vec<LvlXml>,
+}
+
+#[derive(Deserialize)]
+struct LvlXml {
+    #[serde(rename = "@ilvl")]
+    ilvl: u8,
+    #[serde(rename = "numFmt", default)]
+    num_fmt: Option<ValAttr<StNumberFormat>>,
+    #[serde(rename = "lvlText", default)]
+    lvl_text: Option<ValString>,
+    #[serde(rename = "start", default)]
+    start: Option<ValAttr<u32>>,
+    #[serde(rename = "lvlJc", default)]
+    lvl_jc: Option<ValAttr<StJc>>,
+    #[serde(rename = "pPr", default)]
+    p_pr: Option<PPrXml>,
+    #[serde(rename = "rPr", default)]
+    r_pr: Option<RPrXml>,
+    #[serde(rename = "lvlPicBulletId", default)]
+    lvl_pic_bullet_id: Option<ValAttr<i64>>,
+}
+
+#[derive(Deserialize)]
+struct NumXml {
+    #[serde(rename = "@numId")]
+    num_id: i64,
+    #[serde(rename = "abstractNumId", default)]
+    abstract_num_id: Option<ValAttr<i64>>,
+    #[serde(rename = "lvlOverride", default)]
+    overrides: Vec<LvlOverrideXml>,
+}
+
+#[derive(Deserialize)]
+struct LvlOverrideXml {
+    #[serde(rename = "@ilvl")]
+    ilvl: u8,
+    #[serde(rename = "lvl", default)]
+    lvl: Option<LvlXml>,
+}
+
+#[derive(Deserialize)]
+struct NumPicBulletXml {
+    #[serde(rename = "@numPicBulletId")]
+    num_pic_bullet_id: i64,
+}
+
+#[derive(Deserialize)]
+struct ValString {
+    #[serde(rename = "@val")]
+    val: String,
+}
+
+#[derive(Deserialize)]
+#[serde(bound(deserialize = "T: serde::Deserialize<'de>"))]
+struct ValAttr<T> {
+    #[serde(rename = "@val")]
+    val: T,
+}
+
+// ── schema → model ────────────────────────────────────────────────────────
+
+impl From<NumberingXml> for NumberingDefinitions {
+    fn from(x: NumberingXml) -> Self {
+        let mut defs = NumberingDefinitions::default();
+        for a in x.abstract_nums {
+            let id = AbstractNumId::new(a.abstract_num_id);
+            defs.abstract_nums
+                .insert(id, AbstractNumbering { levels: a.levels.into_iter().map(Into::into).collect() });
+        }
+        for n in x.nums {
+            defs.numbering_instances.insert(NumId::new(n.num_id), convert_num(n));
+        }
+        for bullet in x.num_pic_bullets {
+            let id = NumPicBulletId::new(bullet.num_pic_bullet_id);
+            // pict filled in by pre-pass
+            defs.pic_bullets
+                .insert(id, NumPicBullet { id, pict: None });
+        }
+        defs
+    }
+}
+
+impl From<LvlXml> for NumberingLevelDefinition {
+    fn from(x: LvlXml) -> Self {
+        let (indentation, run_properties) = extract_level_properties(x.p_pr, x.r_pr);
+        Self {
+            level: x.ilvl,
+            format: x.num_fmt.map(|v| NumberFormat::from(v.val)),
+            level_text: x.lvl_text.map(|v| v.val).unwrap_or_default(),
+            start: x.start.map(|v| v.val),
+            justification: x.lvl_jc.map(|v| Alignment::from(v.val)),
+            indentation,
+            run_properties,
+            lvl_pic_bullet_id: x.lvl_pic_bullet_id.map(|v| NumPicBulletId::new(v.val)),
+        }
+    }
+}
+
+fn extract_level_properties(
+    p_pr: Option<PPrXml>,
+    r_pr: Option<RPrXml>,
+) -> (Option<Indentation>, Option<RunProperties>) {
+    let indentation = p_pr.and_then(|p| p.split().properties.indentation);
+    let run_properties = r_pr.map(|r| r.split().0);
+    (indentation, run_properties)
+}
+
+fn convert_num(n: NumXml) -> NumberingInstance {
+    let abstract_num_id = n
+        .abstract_num_id
+        .map(|v| AbstractNumId::new(v.val))
+        .unwrap_or_else(|| AbstractNumId::new(0));
+    let level_overrides = n
+        .overrides
+        .into_iter()
+        .filter_map(|o| {
+            o.lvl.map(|mut lvl| {
+                lvl.ilvl = o.ilvl; // legacy parser used override's @ilvl, not inner lvl's
+                NumberingLevelDefinition::from(lvl)
+            })
+        })
+        .collect();
+    NumberingInstance {
+        abstract_num_id,
+        level_overrides,
     }
 }
