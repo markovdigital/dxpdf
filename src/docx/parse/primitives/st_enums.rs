@@ -28,6 +28,9 @@ use crate::docx::model::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StBorderType {
+    /// §17.18.2: "no border" sentinel (distinct from `none` per spec but
+    /// treated identically by the model).
+    Nil,
     None,
     Single,
     Thick,
@@ -59,7 +62,7 @@ pub enum StBorderType {
 impl From<StBorderType> for BorderStyle {
     fn from(s: StBorderType) -> Self {
         match s {
-            StBorderType::None => Self::None,
+            StBorderType::Nil | StBorderType::None => Self::None,
             StBorderType::Single => Self::Single,
             StBorderType::Thick => Self::Thick,
             StBorderType::Double => Self::Double,

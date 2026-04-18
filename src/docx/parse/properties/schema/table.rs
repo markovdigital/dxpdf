@@ -39,7 +39,7 @@ pub(crate) struct TblPrXml {
     #[serde(rename = "tblW", default)]
     tbl_w: Option<TableMeasureXml>,
     #[serde(rename = "tblLayout", default)]
-    tbl_layout: Option<ValAttr<StTblLayoutType>>,
+    tbl_layout: Option<TblLayoutXml>,
     #[serde(rename = "tblInd", default)]
     tbl_ind: Option<TableMeasureXml>,
     #[serde(rename = "tblCellSpacing", default)]
@@ -54,6 +54,13 @@ pub(crate) struct TblPrXml {
     tblp_pr: Option<TblpPrXml>,
     #[serde(rename = "tblOverlap", default)]
     tbl_overlap: Option<ValAttr<StTblOverlap>>,
+}
+
+/// `<w:tblLayout w:type="fixed"/>` — note `@type` (not `@val`).
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub(crate) struct TblLayoutXml {
+    #[serde(rename = "@type")]
+    ty: StTblLayoutType,
 }
 
 /// `<w:tblLook>` — modern per-attribute form only. Legacy hex bitfield on
@@ -109,7 +116,7 @@ impl TblPrXml {
             width: self.tbl_w.map(Into::into),
             layout: self
                 .tbl_layout
-                .map(|v| crate::docx::model::TableLayout::from(v.val)),
+                .map(|v| crate::docx::model::TableLayout::from(v.ty)),
             indent: self.tbl_ind.map(Into::into),
             borders: self.tbl_borders.map(Into::into),
             cell_margins: self.tbl_cell_mar.map(Into::into),
@@ -336,7 +343,7 @@ mod tests {
     #[test]
     fn tbl_pr_layout_and_alignment() {
         let (tp, _) = parse_tbl_pr(
-            r#"<tblPr><jc val="center"/><tblLayout val="fixed"/></tblPr>"#,
+            r#"<tblPr><jc val="center"/><tblLayout type="fixed"/></tblPr>"#,
         );
         assert_eq!(tp.layout, Some(TableLayout::Fixed));
         assert_eq!(tp.alignment, Some(Alignment::Center));
