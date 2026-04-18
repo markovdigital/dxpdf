@@ -297,7 +297,7 @@ fn adjust_margins_for_header_footer(
         let floats_bottom = hf
             .floating_images
             .iter()
-            .filter(|fi| fi.wrap_top_and_bottom)
+            .filter(|fi| fi.is_wrap_top_and_bottom())
             .map(|fi| {
                 let y = match fi.y {
                     layout::section::FloatingImageY::Absolute(y) => y,
@@ -323,7 +323,7 @@ fn adjust_margins_for_header_footer(
         let floats_extent = hf
             .floating_images
             .iter()
-            .filter(|fi| fi.wrap_top_and_bottom)
+            .filter(|fi| fi.is_wrap_top_and_bottom())
             .map(|fi| match fi.y {
                 layout::section::FloatingImageY::Absolute(y) => config.page_size.height - y,
                 layout::section::FloatingImageY::RelativeToParagraph(off) => {

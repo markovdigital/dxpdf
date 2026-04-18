@@ -214,40 +214,47 @@ pub(super) fn parse_shape_properties(
         .map(|s| parse_black_white_mode(&s))
         .transpose()?;
     let mut transform = None;
-    let mut preset_geometry = None;
-    let mut fill = None;
-    let mut outline = None;
+    let mut geometry: Option<ShapeGeometry> = None;
+    let mut fill: Option<DrawingFill> = None;
+    let mut outline: Option<Outline> = None;
+    let mut effect_list = None;
 
     loop {
         match xml::next_event(reader, buf)? {
             Event::Start(ref e) => {
                 let qn = e.name();
-                let local = xml::local_name(qn.as_ref());
-                match local {
+                let local_owned = xml::local_name_owned(qn.as_ref());
+                match &*local_owned {
                     b"xfrm" => {
                         transform = Some(parse_transform_2d(e, reader, buf)?);
                     }
                     b"prstGeom" => {
-                        preset_geometry = Some(parse_preset_geometry(e, reader, buf)?);
-                    }
-                    b"ln" => {
-                        outline = Some(parse_outline(e, reader, buf)?);
+                        geometry = Some(ShapeGeometry::Preset(parse_preset_geometry(
+                            e, reader, buf,
+                        )?));
                     }
                     b"custGeom" => {
-                        xml::warn_unsupported_element("spPr", local);
-                        xml::skip_to_end(reader, buf, local)?;
+                        geometry = Some(ShapeGeometry::Custom(
+                            super::geometry::parse_custom_geometry(reader, buf)?,
+                        ));
                     }
-                    // Fill group — complex, skip children for now.
-                    b"solidFill" | b"gradFill" | b"blipFill" | b"pattFill" | b"grpFill" => {
-                        xml::warn_unsupported_element("spPr", local);
-                        xml::skip_to_end(reader, buf, local)?;
+                    b"ln" => {
+                        outline = Some(super::stroke::parse_outline(reader, buf, e)?);
                     }
-                    b"effectLst" | b"effectDag" | b"scene3d" | b"sp3d" | b"extLst" => {
-                        xml::skip_to_end(reader, buf, local)?;
+                    b"solidFill" | b"gradFill" | b"blipFill" | b"pattFill" | b"grpFill"
+                    | b"noFill" => {
+                        fill = super::fill::parse_drawing_fill(reader, buf, e, false)?;
+                    }
+                    b"effectLst" => {
+                        effect_list = Some(super::effect::parse_effect_list(reader, buf)?);
+                    }
+                    b"effectDag" | b"scene3d" | b"sp3d" | b"extLst" => {
+                        xml::warn_unsupported_element("spPr", &local_owned);
+                        xml::skip_to_end(reader, buf, &local_owned)?;
                     }
                     _ => {
-                        xml::warn_unsupported_element("spPr", local);
-                        xml::skip_to_end(reader, buf, local)?;
+                        xml::warn_unsupported_element("spPr", &local_owned);
+                        xml::skip_to_end(reader, buf, &local_owned)?;
                     }
                 }
             }
@@ -255,9 +262,9 @@ pub(super) fn parse_shape_properties(
                 let qn = e.name();
                 let local = xml::local_name(qn.as_ref());
                 match local {
-                    b"noFill" => {
-                        fill = Some(DrawingFill::NoFill);
-                    }
+                    b"noFill" => fill = Some(DrawingFill::None),
+                    b"grpFill" => fill = Some(DrawingFill::Group),
+                    b"effectLst" => effect_list = Some(EffectList::default()),
                     _ => xml::warn_unsupported_element("spPr", local),
                 }
             }
@@ -270,8 +277,9 @@ pub(super) fn parse_shape_properties(
     Ok(ShapeProperties {
         bw_mode,
         transform,
-        preset_geometry,
+        geometry,
         fill,
+        effect_list,
         outline,
     })
 }
@@ -615,91 +623,150 @@ fn parse_preset_shape_type(val: &str) -> PresetShapeType {
     }
 }
 
-// ── a:ln (§20.1.2.2.24) ────────────────────────────────────────────────────
+// Outline, dash, join, and line-end parsing live in `super::stroke`.
+// Line cap / compound / pen alignment helpers also live there.
 
-fn parse_outline(
-    start: &BytesStart<'_>,
-    reader: &mut Reader<&[u8]>,
-    buf: &mut Vec<u8>,
-) -> Result<Outline> {
-    let width = xml::optional_attr_i64(start, b"w")?.map(Dimension::new);
-    let cap = xml::optional_attr(start, b"cap")?
-        .map(|s| parse_line_cap(&s))
-        .transpose()?;
-    let compound = xml::optional_attr(start, b"cmpd")?
-        .map(|s| parse_compound_line(&s))
-        .transpose()?;
-    let alignment = xml::optional_attr(start, b"algn")?
-        .map(|s| parse_pen_alignment(&s))
-        .transpose()?;
-    let mut fill = None;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::docx::model::{
+        BlendMode, DrawingColor, DrawingFill, Effect, LineDash, LineJoin, PresetLineDashVal,
+        PresetShapeType,
+    };
 
-    loop {
-        match xml::next_event(reader, buf)? {
-            Event::Start(ref e) => {
-                let qn = e.name();
-                let local = xml::local_name(qn.as_ref());
-                // Skip complex children (dash, join, head/tail end, fills).
-                xml::skip_to_end(reader, buf, local)?;
-            }
-            Event::Empty(ref e) => {
-                let qn = e.name();
-                let local = xml::local_name(qn.as_ref());
-                if local == b"noFill" {
-                    fill = Some(DrawingFill::NoFill);
+    fn parse_sp_pr(xml_src: &str) -> ShapeProperties {
+        let mut reader = Reader::from_reader(xml_src.as_bytes());
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+        loop {
+            match xml::next_event(&mut reader, &mut buf).unwrap() {
+                Event::Start(ref e) if xml::local_name(e.name().as_ref()) == b"spPr" => {
+                    return parse_shape_properties(e, &mut reader, &mut buf).unwrap();
                 }
+                Event::Eof => panic!("no spPr"),
+                _ => {}
             }
-            Event::End(ref e) if xml::local_name(e.name().as_ref()) == b"ln" => break,
-            Event::Eof => return Err(xml::unexpected_eof(b"ln")),
-            _ => {}
         }
     }
 
-    Ok(Outline {
-        width,
-        cap,
-        compound,
-        alignment,
-        fill,
-    })
-}
-
-fn parse_line_cap(val: &str) -> Result<LineCap> {
-    match val {
-        "flat" => Ok(LineCap::Flat),
-        "rnd" => Ok(LineCap::Round),
-        "sq" => Ok(LineCap::Square),
-        other => Err(ParseError::InvalidAttributeValue {
-            attr: "cap".into(),
-            value: other.into(),
-            reason: "expected flat, rnd, or sq per §20.1.10.31 ST_LineCap".into(),
-        }),
+    #[test]
+    fn sp_pr_solid_fill_and_outline_with_dash() {
+        let sp = parse_sp_pr(
+            r#"<a:spPr xmlns:a="urn:a">
+                <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                <a:solidFill><a:srgbClr val="4472C4"/></a:solidFill>
+                <a:ln w="12700" cap="rnd">
+                    <a:solidFill><a:srgbClr val="000000"/></a:solidFill>
+                    <a:prstDash val="dashDot"/>
+                    <a:miter lim="800000"/>
+                </a:ln>
+            </a:spPr>"#,
+        );
+        let Some(ShapeGeometry::Preset(preset)) = sp.geometry.as_ref() else {
+            panic!("expected preset geometry")
+        };
+        assert!(matches!(preset.preset, PresetShapeType::Rect));
+        assert!(matches!(
+            sp.fill,
+            Some(DrawingFill::Solid(DrawingColor::Srgb { rgb: 0x4472C4, .. }))
+        ));
+        let outline = sp.outline.unwrap();
+        assert_eq!(outline.width.unwrap().raw(), 12700);
+        assert!(matches!(
+            outline.dash,
+            Some(LineDash::Preset(PresetLineDashVal::DashDot))
+        ));
+        assert!(matches!(
+            outline.join,
+            Some(LineJoin::Miter { limit: Some(_) })
+        ));
     }
-}
 
-fn parse_compound_line(val: &str) -> Result<CompoundLine> {
-    match val {
-        "sng" => Ok(CompoundLine::Single),
-        "dbl" => Ok(CompoundLine::Double),
-        "thickThin" => Ok(CompoundLine::ThickThin),
-        "thinThick" => Ok(CompoundLine::ThinThick),
-        "tri" => Ok(CompoundLine::Triple),
-        other => Err(ParseError::InvalidAttributeValue {
-            attr: "cmpd".into(),
-            value: other.into(),
-            reason: "expected value per §20.1.10.15 ST_CompoundLine".into(),
-        }),
+    #[test]
+    fn sp_pr_gradient_fill_and_effect_list() {
+        let sp = parse_sp_pr(
+            r#"<a:spPr xmlns:a="urn:a">
+                <a:gradFill>
+                    <a:gsLst>
+                        <a:gs pos="0"><a:srgbClr val="FFFFFF"/></a:gs>
+                        <a:gs pos="100000"><a:srgbClr val="000000"/></a:gs>
+                    </a:gsLst>
+                    <a:lin ang="5400000"/>
+                </a:gradFill>
+                <a:effectLst>
+                    <a:outerShdw blurRad="40000" dist="20000" dir="2700000">
+                        <a:srgbClr val="000000"/>
+                    </a:outerShdw>
+                </a:effectLst>
+            </a:spPr>"#,
+        );
+        assert!(matches!(sp.fill, Some(DrawingFill::Gradient(_))));
+        let effects = sp.effect_list.unwrap();
+        assert_eq!(effects.effects.len(), 1);
+        assert!(matches!(effects.effects[0], Effect::OuterShdw(_)));
     }
-}
 
-fn parse_pen_alignment(val: &str) -> Result<PenAlignment> {
-    match val {
-        "ctr" => Ok(PenAlignment::Center),
-        "in" => Ok(PenAlignment::Inset),
-        other => Err(ParseError::InvalidAttributeValue {
-            attr: "algn".into(),
-            value: other.into(),
-            reason: "expected ctr or in per §20.1.10.39 ST_PenAlignment".into(),
-        }),
+    #[test]
+    fn sp_pr_pattern_fill() {
+        let sp = parse_sp_pr(
+            r#"<a:spPr xmlns:a="urn:a">
+                <a:pattFill prst="cross">
+                    <a:fgClr><a:srgbClr val="FF0000"/></a:fgClr>
+                    <a:bgClr><a:srgbClr val="0000FF"/></a:bgClr>
+                </a:pattFill>
+            </a:spPr>"#,
+        );
+        assert!(matches!(sp.fill, Some(DrawingFill::Pattern(_))));
+    }
+
+    #[test]
+    fn sp_pr_no_fill_no_outline() {
+        let sp = parse_sp_pr(
+            r#"<a:spPr xmlns:a="urn:a">
+                <a:noFill/>
+            </a:spPr>"#,
+        );
+        assert!(matches!(sp.fill, Some(DrawingFill::None)));
+        assert!(sp.outline.is_none());
+        assert!(sp.effect_list.is_none());
+    }
+
+    #[test]
+    fn sp_pr_custom_geometry_dispatch() {
+        let sp = parse_sp_pr(
+            r#"<a:spPr xmlns:a="urn:a">
+                <a:custGeom>
+                    <a:pathLst>
+                        <a:path w="100" h="50">
+                            <a:moveTo><a:pt x="0" y="0"/></a:moveTo>
+                            <a:lnTo><a:pt x="100" y="50"/></a:lnTo>
+                        </a:path>
+                    </a:pathLst>
+                </a:custGeom>
+            </a:spPr>"#,
+        );
+        let Some(ShapeGeometry::Custom(g)) = sp.geometry.as_ref() else {
+            panic!("expected custom geometry")
+        };
+        assert_eq!(g.paths.len(), 1);
+        assert_eq!(g.paths[0].commands.len(), 2);
+    }
+
+    #[test]
+    fn sp_pr_fill_overlay_effect_mult() {
+        let sp = parse_sp_pr(
+            r#"<a:spPr xmlns:a="urn:a">
+                <a:effectLst>
+                    <a:fillOverlay blend="mult">
+                        <a:solidFill><a:srgbClr val="FF0000"/></a:solidFill>
+                    </a:fillOverlay>
+                </a:effectLst>
+            </a:spPr>"#,
+        );
+        let effects = sp.effect_list.unwrap();
+        let Effect::FillOverlay(fo) = &effects.effects[0] else {
+            panic!()
+        };
+        assert_eq!(fo.blend, BlendMode::Mult);
     }
 }

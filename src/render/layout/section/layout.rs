@@ -192,6 +192,7 @@ pub fn layout_section(
                 page_break_before,
                 footnotes,
                 floating_images,
+                floating_shapes,
             } => {
                 // §17.3.1.23: force a new page before this paragraph.
                 if *page_break_before && state.cursor_y > config.margins.top {
@@ -260,7 +261,7 @@ pub fn layout_section(
                         }
                         FloatingImageY::Absolute(img_y) => (img_y, img_y + fi.size.height),
                     };
-                    if fi.wrap_top_and_bottom {
+                    if fi.is_wrap_top_and_bottom() {
                         // §20.4.2.18: emit now and advance cursor past the image.
                         let img_y = match fi.y {
                             FloatingImageY::Absolute(y) => y,
@@ -281,6 +282,7 @@ pub fn layout_section(
                             page_y_end: y_end,
                             width: fi.size.width + fi.dist_left + fi.dist_right,
                             source: float::FloatSource::Image,
+                            wrap_text: fi.wrap_mode.wrap_text().into(),
                         };
                         log::debug!(
                             "[layout]   register image float: x={:.1} y={:.1}-{:.1} w={:.1}",
@@ -288,6 +290,68 @@ pub fn layout_section(
                             y_start.raw(),
                             y_end.raw(),
                             float_entry.width.raw()
+                        );
+                        state.page_floats.push(float_entry);
+                    }
+                }
+
+                // §20.4.2: register floating shapes (DrawingML). Parallels
+                // the image loop above but emits `DrawCommand::Path` for
+                // `wrapTopAndBottom` shapes and pushes an `ActiveFloat` with
+                // `FloatSource::Shape` for wrapping modes.
+                for fs in floating_shapes.iter() {
+                    use crate::render::layout::section::WrapMode;
+                    if matches!(fs.wrap_mode, WrapMode::None) {
+                        // wrapNone shapes do not participate in text flow —
+                        // they're emitted after the paragraph (below) with no
+                        // cursor impact.
+                        continue;
+                    }
+                    let (y_start, y_end) = match fs.y {
+                        FloatingImageY::RelativeToParagraph(offset) => {
+                            (content_top + offset, content_top + offset + fs.size.height)
+                        }
+                        FloatingImageY::Absolute(y) => (y, y + fs.size.height),
+                    };
+                    if fs.is_wrap_top_and_bottom() {
+                        // §20.4.2.18: emit now and advance cursor past the shape.
+                        let shape_y = match fs.y {
+                            FloatingImageY::Absolute(y) => y,
+                            FloatingImageY::RelativeToParagraph(offset) => content_top + offset,
+                        };
+                        state.current_page.commands.push(DrawCommand::Path {
+                            origin: crate::render::geometry::PtOffset::new(fs.x, shape_y),
+                            rotation: fs.rotation,
+                            flip_h: fs.flip_h,
+                            flip_v: fs.flip_v,
+                            extent: fs.size,
+                            paths: fs.paths.clone(),
+                            fill: fs.fill.clone(),
+                            stroke: fs.stroke.clone(),
+                            effects: fs.effects.clone(),
+                        });
+                        if y_end > state.cursor_y {
+                            state.cursor_y = y_end;
+                        }
+                    } else {
+                        // Square / Tight / Through — register as active float.
+                        // Tight/Through approximated as Square per the Tier 1
+                        // plan (docs/drawingml-text-wrap.md Phase E).
+                        let float_entry = float::ActiveFloat {
+                            page_x: fs.x - fs.dist_left,
+                            page_y_start: y_start,
+                            page_y_end: y_end,
+                            width: fs.size.width + fs.dist_left + fs.dist_right,
+                            source: float::FloatSource::Shape,
+                            wrap_text: fs.wrap_mode.wrap_text().into(),
+                        };
+                        log::debug!(
+                            "[layout]   register shape float: x={:.1} y={:.1}-{:.1} w={:.1} mode={:?}",
+                            float_entry.page_x.raw(),
+                            y_start.raw(),
+                            y_end.raw(),
+                            float_entry.width.raw(),
+                            fs.wrap_mode
                         );
                         state.page_floats.push(float_entry);
                     }
@@ -315,7 +379,7 @@ pub fn layout_section(
                                 break;
                             }
                             for fi in fi_list {
-                                if fi.wrap_top_and_bottom {
+                                if fi.is_wrap_top_and_bottom() {
                                     continue; // handled as block spacers, not floats
                                 }
                                 if let FloatingImageY::Absolute(img_y) = fi.y {
@@ -325,6 +389,7 @@ pub fn layout_section(
                                         page_y_end: img_y + fi.size.height,
                                         width: fi.size.width + fi.dist_left + fi.dist_right,
                                         source: float::FloatSource::Image,
+                                        wrap_text: fi.wrap_mode.wrap_text().into(),
                                     });
                                 }
                             }
@@ -550,7 +615,7 @@ pub fn layout_section(
                 // §20.4.2.3: emit non-wrapTopAndBottom floating images.
                 // (wrapTopAndBottom images were emitted immediately above.)
                 for fi in floating_images {
-                    if fi.wrap_top_and_bottom {
+                    if fi.is_wrap_top_and_bottom() {
                         continue;
                     }
                     let img_y = match fi.y {
@@ -562,6 +627,33 @@ pub fn layout_section(
                     state.current_page.commands.push(DrawCommand::Image {
                         rect: PtRect::from_xywh(fi.x, img_y, fi.size.width, fi.size.height),
                         image_data: fi.image_data.clone(),
+                    });
+                }
+
+                // §20.4.2: emit floating DrawingML shapes after the
+                // paragraph's text so they paint on top (for `behindDoc=0`).
+                // `wrapTopAndBottom` shapes were emitted pre-layout along
+                // with their cursor advance — skip them here.
+                for fs in floating_shapes {
+                    if fs.is_wrap_top_and_bottom() {
+                        continue;
+                    }
+                    let shape_y = match fs.y {
+                        FloatingImageY::Absolute(y) => y,
+                        FloatingImageY::RelativeToParagraph(offset) => {
+                            para_start_y + effective_style.space_before + offset
+                        }
+                    };
+                    state.current_page.commands.push(DrawCommand::Path {
+                        origin: crate::render::geometry::PtOffset::new(fs.x, shape_y),
+                        rotation: fs.rotation,
+                        flip_h: fs.flip_h,
+                        flip_v: fs.flip_v,
+                        extent: fs.size,
+                        paths: fs.paths.clone(),
+                        fill: fs.fill.clone(),
+                        stroke: fs.stroke.clone(),
+                        effects: fs.effects.clone(),
                     });
                 }
 
@@ -674,6 +766,9 @@ pub fn layout_section(
                         source: float::FloatSource::Table {
                             owner_block_idx: block_idx,
                         },
+                        // §17.4.58: floating tables default to bothSides;
+                        // no dedicated wrapText attribute exists for tables.
+                        wrap_text: float::WrapTextSide::BothSides,
                     });
                     continue;
                 }

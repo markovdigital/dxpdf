@@ -137,6 +137,8 @@ fn render_header(
             image_data: fi.image_data.clone(),
         });
     }
+    // Floating shapes are emitted by `stack_blocks` into `result.commands`
+    // above — they travel on their owning paragraph for per-paragraph y.
 
     // Prepend header commands before body content.
     header_cmds.append(&mut page.commands);
@@ -197,6 +199,8 @@ fn render_footer(
             image_data: fi.image_data.clone(),
         });
     }
+    // Floating shapes are emitted by `stack_blocks` into `result.commands`
+    // above — they travel on their owning paragraph for per-paragraph y.
 }
 
 #[cfg(test)]
@@ -217,6 +221,7 @@ mod tests {
                 page_break_before: false,
                 footnotes: vec![],
                 floating_images: vec![],
+                floating_shapes: vec![],
             }],
             absolute_position: None,
             floating_images: vec![],

@@ -121,19 +121,23 @@ pub fn parse_anchor_image(
                     }
                     b"wrapTight" => {
                         let wrap_text = parse_wrap_text_attr(e)?;
+                        let distance = parse_wrap_distance(e)?;
+                        let polygon = parse_optional_wrap_polygon(reader, buf, b"wrapTight")?;
                         wrap = TextWrap::Tight {
-                            distance: parse_wrap_distance(e)?,
+                            distance,
                             wrap_text,
+                            polygon,
                         };
-                        xml::skip_to_end(reader, buf, b"wrapTight")?;
                     }
                     b"wrapThrough" => {
                         let wrap_text = parse_wrap_text_attr(e)?;
+                        let distance = parse_wrap_distance(e)?;
+                        let polygon = parse_optional_wrap_polygon(reader, buf, b"wrapThrough")?;
                         wrap = TextWrap::Through {
-                            distance: parse_wrap_distance(e)?,
+                            distance,
                             wrap_text,
+                            polygon,
                         };
-                        xml::skip_to_end(reader, buf, b"wrapThrough")?;
                     }
                     b"wrapTopAndBottom" => {
                         let dt = xml::optional_attr_i64(e, b"distT")?.unwrap_or(0);
@@ -213,6 +217,7 @@ pub fn parse_anchor_image(
                         wrap = TextWrap::Tight {
                             distance: parse_wrap_distance(e)?,
                             wrap_text,
+                            polygon: None,
                         };
                     }
                     b"wrapThrough" => {
@@ -220,6 +225,7 @@ pub fn parse_anchor_image(
                         wrap = TextWrap::Through {
                             distance: parse_wrap_distance(e)?,
                             wrap_text,
+                            polygon: None,
                         };
                     }
                     b"wrapTopAndBottom" => {
@@ -476,4 +482,89 @@ fn parse_wrap_text_attr(e: &BytesStart<'_>) -> Result<WrapText> {
             reason: "expected value per §20.4.3.7 ST_WrapText".into(),
         }),
     }
+}
+
+// ── §20.4.2.10 wp:wrapPolygon ──────────────────────────────────────────────
+
+/// Parse the children of a `<wp:wrapTight>` / `<wp:wrapThrough>` element
+/// (reader already positioned after the Start), extracting an optional
+/// `<wp:wrapPolygon>` and skipping any other children up to the parent
+/// End tag.
+fn parse_optional_wrap_polygon(
+    reader: &mut Reader<&[u8]>,
+    buf: &mut Vec<u8>,
+    end_tag: &[u8],
+) -> Result<Option<WrapPolygon>> {
+    let mut polygon: Option<WrapPolygon> = None;
+    loop {
+        match xml::next_event(reader, buf)? {
+            Event::Start(ref e) if xml::local_name(e.name().as_ref()) == b"wrapPolygon" => {
+                polygon = Some(parse_wrap_polygon(e, reader, buf)?);
+            }
+            Event::Empty(ref e) if xml::local_name(e.name().as_ref()) == b"wrapPolygon" => {
+                // Malformed: spec requires one `start` + ≥2 `lineTo` children.
+                log::warn!("wp:wrapPolygon: empty element — spec requires start + lineTo sequence");
+                polygon = Some(WrapPolygon {
+                    edited: xml::optional_attr_bool(e, b"edited")?,
+                    start: Offset::new(Dimension::new(0), Dimension::new(0)),
+                    line_to: Vec::new(),
+                });
+            }
+            Event::End(ref e) if xml::local_name(e.name().as_ref()) == end_tag => break,
+            Event::Eof => return Err(xml::unexpected_eof(end_tag)),
+            _ => {}
+        }
+    }
+    Ok(polygon)
+}
+
+/// Parse `<wp:wrapPolygon>` itself (reader positioned after Start).
+fn parse_wrap_polygon(
+    start: &BytesStart<'_>,
+    reader: &mut Reader<&[u8]>,
+    buf: &mut Vec<u8>,
+) -> Result<WrapPolygon> {
+    let edited = xml::optional_attr_bool(start, b"edited")?;
+    let mut start_pt: Option<Offset<Emu>> = None;
+    let mut line_to: Vec<Offset<Emu>> = Vec::new();
+
+    loop {
+        match xml::next_event(reader, buf)? {
+            Event::Empty(ref e) | Event::Start(ref e) => {
+                let qn = e.name();
+                let local = xml::local_name(qn.as_ref());
+                match local {
+                    b"start" => start_pt = Some(parse_point_2d(e, "wp:start")?),
+                    b"lineTo" => line_to.push(parse_point_2d(e, "wp:lineTo")?),
+                    _ => xml::warn_unsupported_element("wrapPolygon", local),
+                }
+            }
+            Event::End(ref e) if xml::local_name(e.name().as_ref()) == b"wrapPolygon" => break,
+            Event::Eof => return Err(xml::unexpected_eof(b"wrapPolygon")),
+            _ => {}
+        }
+    }
+
+    let start = start_pt.ok_or_else(|| ParseError::MissingElement {
+        parent: "wp:wrapPolygon".into(),
+        child: "wp:start".into(),
+    })?;
+    Ok(WrapPolygon {
+        edited,
+        start,
+        line_to,
+    })
+}
+
+/// §20.4.2.13 CT_Point2D — parse (x, y) attributes in EMU.
+fn parse_point_2d(e: &BytesStart<'_>, elem_name: &str) -> Result<Offset<Emu>> {
+    let x = xml::optional_attr_i64(e, b"x")?.ok_or_else(|| ParseError::MissingAttribute {
+        element: elem_name.into(),
+        attr: "x".into(),
+    })?;
+    let y = xml::optional_attr_i64(e, b"y")?.ok_or_else(|| ParseError::MissingAttribute {
+        element: elem_name.into(),
+        attr: "y".into(),
+    })?;
+    Ok(Offset::new(Dimension::new(x), Dimension::new(y)))
 }

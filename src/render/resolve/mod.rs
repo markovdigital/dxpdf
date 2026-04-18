@@ -2,11 +2,14 @@
 
 pub mod color;
 pub mod conditional;
+pub mod drawing_color;
 pub mod fonts;
 pub mod images;
 pub mod numbering;
 pub mod properties;
 pub mod sections;
+pub mod shape_geometry;
+pub mod shape_visuals;
 pub mod styles;
 
 use std::collections::HashMap;

@@ -27,7 +27,7 @@ use block::{build_block, build_fragments, collect_endnotes};
 use convert::{
     doc_font_family, doc_font_size, paragraph_style_from_props, resolve_paragraph_defaults,
 };
-use floating::{extract_floating_images, find_vml_absolute_position};
+use floating::{extract_floating_images, find_vml_absolute_position, AnchorFrame};
 use table::build_table;
 
 /// §17.8.3.2: OOXML fallback font when no theme or doc defaults specify one.
@@ -109,6 +109,12 @@ pub struct HeaderFooterContent {
     /// Absolute page-relative position from a VML text box, if present.
     pub absolute_position: Option<(Pt, Pt)>,
     /// Floating (anchor) images from header/footer paragraphs.
+    ///
+    /// Images are collected outside the layout-block tree so the renderer
+    /// can split behindDoc and in-front-of-text images around the text
+    /// commands for correct z-ordering. Floating shapes, by contrast, ride
+    /// on `LayoutBlock::Paragraph.floating_shapes` so the stacker can anchor
+    /// them to the owning paragraph's y position.
     pub floating_images: Vec<crate::render::layout::section::FloatingImage>,
 }
 
@@ -144,13 +150,39 @@ pub fn build_header_footer_content(
                         }
                     }
                 }
-                // Extract floating (anchor) images — positioned page-relative.
-                let floats = extract_floating_images(p, ctx, state, false);
-                all_floating_images.extend(floats);
+                // §20.4.2.3: extract floating (anchor) images. Images are
+                // collected at the header/footer level and emitted by
+                // `render_header`/`render_footer` *outside* of `stack_blocks`
+                // — that's how z-ordering against the text (behindDoc) is
+                // implemented. Because the caller does not apply the stack
+                // shift to these commands, their coordinates must be
+                // page-absolute.
+                let para_floats = extract_floating_images(p, ctx, state, AnchorFrame::Page);
+                let has_float_images = !para_floats.is_empty();
+                all_floating_images.extend(para_floats);
+                // Shapes, by contrast, travel on the owning paragraph so
+                // `stack_blocks` can anchor them to the paragraph's y
+                // coordinate. `stack_blocks` emits every command in
+                // stack-frame-relative space and `render_footer` /
+                // `render_header` later shift the whole batch by
+                // `margins.left` — so shapes must be resolved in the stack
+                // frame (not page-absolute), otherwise `margins.left` would
+                // be applied twice. §17.10.1: z-ordering against the
+                // surrounding text in Tier 0 is paragraph-granular, matching
+                // the stack-frame emission order.
+                let paragraph_shapes =
+                    floating::extract_floating_shapes(p, ctx, state, AnchorFrame::Stack);
 
                 // §17.10.1: empty non-last paragraphs in headers/footers still
                 // occupy a line height (from the paragraph mark's font size).
-                if frags.is_empty() && block_i + 1 < block_count {
+                //
+                // Exception: paragraphs whose only content is floating shape
+                // or image anchors are treated as zero-height anchors —
+                // Word positions the shape relative to the paragraph top,
+                // which must coincide with the preceding paragraph's bottom
+                // (otherwise the shape displaces text it should flank).
+                let has_floating_anchor = has_float_images || !paragraph_shapes.is_empty();
+                if frags.is_empty() && block_i + 1 < block_count && !has_floating_anchor {
                     let (family, mut size, ..) = resolve_paragraph_defaults(p, ctx.resolved, false);
                     if let Some(ref mrp) = p.mark_run_properties {
                         if let Some(fs) = mrp.font_size {
@@ -167,6 +199,7 @@ pub fn build_header_footer_content(
                     page_break_before: false,
                     footnotes: vec![],
                     floating_images: vec![], // handled separately above
+                    floating_shapes: paragraph_shapes,
                 });
             }
             Block::Table(t) => {
