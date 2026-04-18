@@ -49,15 +49,14 @@ pub(super) fn extract_floating_images(
     fn find_anchor_images<'a>(inlines: &'a [Inline], out: &mut Vec<&'a crate::model::Image>) {
         for inline in inlines {
             match inline {
-                Inline::Image(img) => {
-                    // Images with a WordProcessingShape graphic are handled by
-                    // `extract_floating_shapes`; skip them here so the shape
-                    // branch owns their layout path end-to-end.
+                // Images with a WordProcessingShape graphic are handled by
+                // `extract_floating_shapes`; skip them here so the shape
+                // branch owns their layout path end-to-end.
+                Inline::Image(img)
                     if matches!(img.placement, ImagePlacement::Anchor(_))
-                        && !matches!(img.graphic, Some(GraphicContent::WordProcessingShape(_)))
-                    {
-                        out.push(img);
-                    }
+                        && !matches!(img.graphic, Some(GraphicContent::WordProcessingShape(_))) =>
+                {
+                    out.push(img);
                 }
                 Inline::Hyperlink(link) => find_anchor_images(&link.content, out),
                 Inline::Field(f) => find_anchor_images(&f.content, out),
@@ -127,12 +126,11 @@ pub(super) fn extract_floating_shapes(
     fn find_anchor_shapes<'a>(inlines: &'a [Inline], out: &mut Vec<&'a crate::model::Image>) {
         for inline in inlines {
             match inline {
-                Inline::Image(img) => {
+                Inline::Image(img)
                     if matches!(img.placement, ImagePlacement::Anchor(_))
-                        && matches!(img.graphic, Some(GraphicContent::WordProcessingShape(_)))
-                    {
-                        out.push(img);
-                    }
+                        && matches!(img.graphic, Some(GraphicContent::WordProcessingShape(_))) =>
+                {
+                    out.push(img);
                 }
                 Inline::Hyperlink(link) => find_anchor_shapes(&link.content, out),
                 Inline::Field(f) => find_anchor_shapes(&f.content, out),
