@@ -19,8 +19,8 @@ use serde::Deserialize;
 use crate::docx::model::{
     Alignment, BorderStyle, BreakClear, CellVerticalAlign, FieldCharType, FrameWrap, HeightRule,
     HighlightColor, NumberFormat, PageOrientation, SectionType, ShadingPattern, TabAlignment,
-    TabLeader, TableLayout, TableOverlap, TextAlignment, TextDirection, ThemeFontRef,
-    UnderlineStyle, VerticalAlign,
+    TabLeader, TableAnchor, TableLayout, TableOverlap, TableXAlign, TableYAlign, TextAlignment,
+    TextDirection, ThemeFontRef, UnderlineStyle, VerticalAlign,
 };
 
 // ── StBorderType (§17.18.2) ───────────────────────────────────────────────
@@ -433,6 +433,79 @@ impl From<StShd> for ShadingPattern {
             StShd::Pct87 => Self::Pct87,
             StShd::Pct90 => Self::Pct90,
             StShd::Pct95 => Self::Pct95,
+        }
+    }
+}
+
+// ── StHAnchor/StVAnchor (§17.18.35/106) ─────────────────────────────────
+//
+// Shared by table positioning (`<w:tblpPr>`) and frame positioning
+// (`<w:framePr>`). OOXML uses the same tag set in both spots.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StAnchor {
+    Text,
+    Margin,
+    Page,
+}
+
+impl From<StAnchor> for TableAnchor {
+    fn from(s: StAnchor) -> Self {
+        match s {
+            StAnchor::Text => Self::Text,
+            StAnchor::Margin => Self::Margin,
+            StAnchor::Page => Self::Page,
+        }
+    }
+}
+
+// ── StXAlign (§17.18.108) ────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StXAlign {
+    Left,
+    Center,
+    Right,
+    Inside,
+    Outside,
+}
+
+impl From<StXAlign> for TableXAlign {
+    fn from(s: StXAlign) -> Self {
+        match s {
+            StXAlign::Left => Self::Left,
+            StXAlign::Center => Self::Center,
+            StXAlign::Right => Self::Right,
+            StXAlign::Inside => Self::Inside,
+            StXAlign::Outside => Self::Outside,
+        }
+    }
+}
+
+// ── StYAlign (§17.18.109) ────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StYAlign {
+    Top,
+    Center,
+    Bottom,
+    Inside,
+    Outside,
+    Inline,
+}
+
+impl From<StYAlign> for TableYAlign {
+    fn from(s: StYAlign) -> Self {
+        match s {
+            StYAlign::Top => Self::Top,
+            StYAlign::Center => Self::Center,
+            StYAlign::Bottom => Self::Bottom,
+            StYAlign::Inside => Self::Inside,
+            StYAlign::Outside => Self::Outside,
+            StYAlign::Inline => Self::Inline,
         }
     }
 }
