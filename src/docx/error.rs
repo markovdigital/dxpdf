@@ -9,6 +9,9 @@ pub enum ParseError {
     #[error("failed to parse XML: {0}")]
     Xml(#[from] quick_xml::Error),
 
+    #[error("failed to deserialize XML: {0}")]
+    XmlDeserialize(#[from] quick_xml::DeError),
+
     #[error("invalid XML attribute: {0}")]
     XmlAttr(#[from] quick_xml::events::attributes::AttrError),
 

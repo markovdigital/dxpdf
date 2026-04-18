@@ -6,6 +6,7 @@ pub mod fonts;
 pub mod notes;
 pub mod numbering;
 pub mod properties;
+pub mod serde_xml;
 pub mod settings;
 pub mod styles;
 pub mod theme;
