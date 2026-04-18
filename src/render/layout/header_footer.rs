@@ -137,25 +137,8 @@ fn render_header(
             image_data: fi.image_data.clone(),
         });
     }
-
-    // Floating shapes (DrawingML). Tier 0 paints them without wrap logic.
-    for fs in &hf.floating_shapes {
-        let shape_y = match fs.y {
-            super::section::FloatingImageY::Absolute(y) => y,
-            super::section::FloatingImageY::RelativeToParagraph(off) => offset_y + off,
-        };
-        header_cmds.push(DrawCommand::Path {
-            origin: crate::render::geometry::PtOffset::new(fs.x, shape_y),
-            rotation: fs.rotation,
-            flip_h: fs.flip_h,
-            flip_v: fs.flip_v,
-            extent: fs.size,
-            paths: fs.paths.clone(),
-            fill: fs.fill.clone(),
-            stroke: fs.stroke.clone(),
-            effects: fs.effects.clone(),
-        });
-    }
+    // Floating shapes are emitted by `stack_blocks` into `result.commands`
+    // above — they travel on their owning paragraph for per-paragraph y.
 
     // Prepend header commands before body content.
     header_cmds.append(&mut page.commands);
@@ -216,25 +199,8 @@ fn render_footer(
             image_data: fi.image_data.clone(),
         });
     }
-
-    // Floating shapes (DrawingML).
-    for fs in &hf.floating_shapes {
-        let shape_y = match fs.y {
-            super::section::FloatingImageY::Absolute(y) => y,
-            super::section::FloatingImageY::RelativeToParagraph(off) => footer_y + off,
-        };
-        page.commands.push(DrawCommand::Path {
-            origin: crate::render::geometry::PtOffset::new(fs.x, shape_y),
-            rotation: fs.rotation,
-            flip_h: fs.flip_h,
-            flip_v: fs.flip_v,
-            extent: fs.size,
-            paths: fs.paths.clone(),
-            fill: fs.fill.clone(),
-            stroke: fs.stroke.clone(),
-            effects: fs.effects.clone(),
-        });
-    }
+    // Floating shapes are emitted by `stack_blocks` into `result.commands`
+    // above — they travel on their owning paragraph for per-paragraph y.
 }
 
 #[cfg(test)]
@@ -259,7 +225,6 @@ mod tests {
             }],
             absolute_position: None,
             floating_images: vec![],
-            floating_shapes: vec![],
         }
     }
 
@@ -330,7 +295,6 @@ mod tests {
             blocks: vec![],
             absolute_position: None,
             floating_images: vec![],
-            floating_shapes: vec![],
         };
         render_header(
             &mut pages[0],

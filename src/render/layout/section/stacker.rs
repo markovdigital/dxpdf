@@ -71,7 +71,7 @@ pub fn stack_blocks(
                         }
                         FloatingImageY::Absolute(img_y) => (img_y, img_y + fi.size.height),
                     };
-                    if fi.wrap_top_and_bottom {
+                    if fi.is_wrap_top_and_bottom() {
                         let img_y = match fi.y {
                             FloatingImageY::Absolute(y) => y,
                             FloatingImageY::RelativeToParagraph(offset) => content_top + offset,
@@ -90,6 +90,54 @@ pub fn stack_blocks(
                             page_y_end: y_end,
                             width: fi.size.width + fi.dist_left + fi.dist_right,
                             source: float::FloatSource::Image,
+                            wrap_text: fi.wrap_mode.wrap_text().into(),
+                        });
+                    }
+                }
+
+                // §20.4.2: register floating shapes (DrawingML). Mirrors the
+                // image branch above: `TopAndBottom` emits now and advances
+                // the cursor; wrap-enabled modes (Square/Tight/Through) are
+                // registered as active floats so subsequent lines narrow
+                // around them. `None` shapes emit after the paragraph.
+                for fs in floating_shapes.iter() {
+                    use crate::render::layout::section::WrapMode;
+                    if matches!(fs.wrap_mode, WrapMode::None) {
+                        continue;
+                    }
+                    let (y_start, y_end) = match fs.y {
+                        FloatingImageY::RelativeToParagraph(offset) => {
+                            (content_top + offset, content_top + offset + fs.size.height)
+                        }
+                        FloatingImageY::Absolute(y) => (y, y + fs.size.height),
+                    };
+                    if fs.is_wrap_top_and_bottom() {
+                        let shape_y = match fs.y {
+                            FloatingImageY::Absolute(y) => y,
+                            FloatingImageY::RelativeToParagraph(offset) => content_top + offset,
+                        };
+                        commands.push(DrawCommand::Path {
+                            origin: crate::render::geometry::PtOffset::new(fs.x, shape_y),
+                            rotation: fs.rotation,
+                            flip_h: fs.flip_h,
+                            flip_v: fs.flip_v,
+                            extent: fs.size,
+                            paths: fs.paths.clone(),
+                            fill: fs.fill.clone(),
+                            stroke: fs.stroke.clone(),
+                            effects: fs.effects.clone(),
+                        });
+                        if y_end > cursor_y {
+                            cursor_y = y_end;
+                        }
+                    } else {
+                        page_floats.push(float::ActiveFloat {
+                            page_x: fs.x - fs.dist_left,
+                            page_y_start: y_start,
+                            page_y_end: y_end,
+                            width: fs.size.width + fs.dist_left + fs.dist_right,
+                            source: float::FloatSource::Shape,
+                            wrap_text: fs.wrap_mode.wrap_text().into(),
                         });
                     }
                 }
@@ -119,7 +167,7 @@ pub fn stack_blocks(
                 // Emit non-wrapTopAndBottom floating images.
                 let para_content_top = cursor_y - para.size.height + effective_style.space_before;
                 for fi in floating_images {
-                    if fi.wrap_top_and_bottom {
+                    if fi.is_wrap_top_and_bottom() {
                         continue;
                     }
                     let img_y = match fi.y {
@@ -138,10 +186,15 @@ pub fn stack_blocks(
                     }
                 }
 
-                // Emit floating shapes (DrawingML). Tier 0 does not wrap
-                // text around shapes; they paint at their resolved anchor
-                // position.
+                // Emit floating shapes (DrawingML). `TopAndBottom` shapes
+                // were emitted pre-layout along with the `cursor_y` advance;
+                // skip them here. `None` + Square/Tight/Through emit now at
+                // their resolved anchor position (the shape's bounding rect
+                // is already registered as an active float for wrap modes).
                 for fs in floating_shapes {
+                    if fs.is_wrap_top_and_bottom() {
+                        continue;
+                    }
                     let shape_y = match fs.y {
                         FloatingImageY::Absolute(y) => y,
                         FloatingImageY::RelativeToParagraph(offset) => para_content_top + offset,
@@ -157,10 +210,6 @@ pub fn stack_blocks(
                         stroke: fs.stroke.clone(),
                         effects: fs.effects.clone(),
                     });
-                    let shape_bottom = shape_y + fs.size.height;
-                    if shape_bottom > cursor_y {
-                        cursor_y = shape_bottom;
-                    }
                 }
 
                 prev_space_after = effective_style.space_after;

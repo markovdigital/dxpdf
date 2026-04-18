@@ -208,10 +208,7 @@ pub(super) fn extract_floating_images(
                 size: crate::render::geometry::PtSize::new(w, h),
                 x,
                 y,
-                wrap_top_and_bottom: matches!(
-                    anchor.wrap,
-                    crate::model::TextWrap::TopAndBottom { .. }
-                ),
+                wrap_mode: crate::render::layout::section::WrapMode::from_model(&anchor.wrap),
                 dist_left: Pt::from(anchor.distance.left),
                 dist_right: Pt::from(anchor.distance.right),
                 behind_doc: anchor.behind_text,
@@ -320,7 +317,7 @@ pub(super) fn extract_floating_shapes(
             rotation,
             flip_h,
             flip_v,
-            wrap_top_and_bottom: matches!(anchor.wrap, crate::model::TextWrap::TopAndBottom { .. }),
+            wrap_mode: crate::render::layout::section::WrapMode::from_model(&anchor.wrap),
             dist_left: Pt::from(anchor.distance.left),
             dist_right: Pt::from(anchor.distance.right),
             behind_doc: anchor.behind_text,

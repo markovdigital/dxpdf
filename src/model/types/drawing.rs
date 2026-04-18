@@ -1021,7 +1021,7 @@ pub enum PenAlignment {
 }
 
 /// §20.4.2.3 CT_Anchor — anchor/floating drawing properties.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct AnchorProperties {
     /// §20.4.2.3: distance from surrounding text.
     pub distance: EdgeInsets<Emu>,
@@ -1094,7 +1094,7 @@ pub enum AnchorAlignment {
 }
 
 /// Text wrapping mode for anchored drawings.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum TextWrap {
     /// §20.4.2.15: no wrapping.
     None,
@@ -1103,21 +1103,42 @@ pub enum TextWrap {
         distance: EdgeInsets<Emu>,
         wrap_text: WrapText,
     },
-    /// §20.4.2.16: tight wrapping.
+    /// §20.4.2.16: tight wrapping around the shape's polygon outline.
+    /// `polygon` is optional: malformed documents may omit it and are
+    /// treated as square-wrap approximations at layout time.
     Tight {
         distance: EdgeInsets<Emu>,
         wrap_text: WrapText,
+        polygon: Option<WrapPolygon>,
     },
     /// §20.4.2.18: text above and below only.
     TopAndBottom {
         distance_top: Dimension<Emu>,
         distance_bottom: Dimension<Emu>,
     },
-    /// §20.4.2.14: through wrapping.
+    /// §20.4.2.14: through wrapping — text flows through polygon interior.
     Through {
         distance: EdgeInsets<Emu>,
         wrap_text: WrapText,
+        polygon: Option<WrapPolygon>,
     },
+}
+
+/// §20.4.2.10 CT_WrapPath — the polygon outline used by `wrapTight` and
+/// `wrapThrough`. `start` is the initial moveTo; `line_to` is the sequence
+/// of subsequent edge endpoints; the polygon is implicitly closed back to
+/// `start` (§20.4.2.10 spec note).
+#[derive(Clone, Debug)]
+pub struct WrapPolygon {
+    /// @edited — whether the polygon has been hand-edited. Default false.
+    pub edited: Option<bool>,
+    /// §20.4.2.13 wp:start — first point (shape-local EMU coords).
+    pub start: Offset<Emu>,
+    /// §20.4.2.11 wp:lineTo — edge sequence after `start`. The spec
+    /// requires at least two lineTo entries (polygon must have ≥3 points
+    /// total when closed); malformed shorter inputs are accepted but will
+    /// be skipped at layout time.
+    pub line_to: Vec<Offset<Emu>>,
 }
 
 /// §20.4.3.7 ST_WrapText — which sides text wraps on.

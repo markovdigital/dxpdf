@@ -109,9 +109,13 @@ pub struct HeaderFooterContent {
     /// Absolute page-relative position from a VML text box, if present.
     pub absolute_position: Option<(Pt, Pt)>,
     /// Floating (anchor) images from header/footer paragraphs.
+    ///
+    /// Images are collected outside the layout-block tree so the renderer
+    /// can split behindDoc and in-front-of-text images around the text
+    /// commands for correct z-ordering. Floating shapes, by contrast, ride
+    /// on `LayoutBlock::Paragraph.floating_shapes` so the stacker can anchor
+    /// them to the owning paragraph's y position.
     pub floating_images: Vec<crate::render::layout::section::FloatingImage>,
-    /// Floating DrawingML shapes from header/footer paragraphs.
-    pub floating_shapes: Vec<crate::render::layout::section::FloatingShape>,
 }
 
 /// Build header/footer content from blocks.
@@ -126,7 +130,6 @@ pub fn build_header_footer_content(
 ) -> HeaderFooterContent {
     let mut layout_blocks = Vec::new();
     let mut all_floating_images = Vec::new();
-    let mut all_floating_shapes = Vec::new();
     let mut absolute_position: Option<(Pt, Pt)> = None;
 
     let available_width = state.page_config.content_width();
@@ -148,14 +151,27 @@ pub fn build_header_footer_content(
                     }
                 }
                 // Extract floating (anchor) images — positioned page-relative.
-                let floats = extract_floating_images(p, ctx, state, false);
-                all_floating_images.extend(floats);
-                let shape_floats = floating::extract_floating_shapes(p, ctx, state, false);
-                all_floating_shapes.extend(shape_floats);
+                // Images use the hf-level list for z-order handling (behindDoc
+                // splits the emission around text commands).
+                let para_floats = extract_floating_images(p, ctx, state, false);
+                let has_float_images = !para_floats.is_empty();
+                all_floating_images.extend(para_floats);
+                // Shapes, by contrast, travel on the paragraph so
+                // `stack_blocks` can anchor them to the owning paragraph's
+                // y coordinate. In Tier 0 all shapes are in-front-of-doc,
+                // so per-paragraph emission preserves the desired z-order.
+                let paragraph_shapes = floating::extract_floating_shapes(p, ctx, state, false);
 
                 // §17.10.1: empty non-last paragraphs in headers/footers still
                 // occupy a line height (from the paragraph mark's font size).
-                if frags.is_empty() && block_i + 1 < block_count {
+                //
+                // Exception: paragraphs whose only content is floating shape
+                // or image anchors are treated as zero-height anchors —
+                // Word positions the shape relative to the paragraph top,
+                // which must coincide with the preceding paragraph's bottom
+                // (otherwise the shape displaces text it should flank).
+                let has_floating_anchor = has_float_images || !paragraph_shapes.is_empty();
+                if frags.is_empty() && block_i + 1 < block_count && !has_floating_anchor {
                     let (family, mut size, ..) = resolve_paragraph_defaults(p, ctx.resolved, false);
                     if let Some(ref mrp) = p.mark_run_properties {
                         if let Some(fs) = mrp.font_size {
@@ -172,7 +188,7 @@ pub fn build_header_footer_content(
                     page_break_before: false,
                     footnotes: vec![],
                     floating_images: vec![], // handled separately above
-                    floating_shapes: vec![], // handled separately above
+                    floating_shapes: paragraph_shapes,
                 });
             }
             Block::Table(t) => {
@@ -195,7 +211,6 @@ pub fn build_header_footer_content(
         blocks: layout_blocks,
         absolute_position,
         floating_images: all_floating_images,
-        floating_shapes: all_floating_shapes,
     }
 }
 
