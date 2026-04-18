@@ -9,6 +9,7 @@ mod fill;
 mod geometry;
 mod inline;
 mod picture;
+pub mod schema;
 mod shape;
 mod stroke;
 
