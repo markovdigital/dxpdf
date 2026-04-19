@@ -6,4 +6,5 @@
 pub mod color;
 pub mod effect;
 pub mod fill;
+pub mod picture;
 pub mod stroke;
