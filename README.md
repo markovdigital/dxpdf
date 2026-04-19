@@ -36,7 +36,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-dxpdf = "0.2.7"
+dxpdf = "0.2.8"
 ```
 
 ### Python Package
@@ -170,7 +170,7 @@ Each layout element (paragraphs, table cells, headers/footers) goes through thre
 | `dimension` | Type-safe dimensional units (`Twips`, `HalfPoints`, `EighthPoints`, `Emu`, `Pt`) with compile-time unit safety |
 | `geometry` | Spatial types (`Offset`, `Size`, `Rect`, `EdgeInsets`, `LineSegment`) — generic over unit, with Skia interop |
 | `model` | Algebraic data types representing the full document tree (`Document`, `Block`, `Inline`, etc.) |
-| `docx` | DOCX ZIP extraction, event-driven XML parser, style and numbering resolution |
+| `docx` | DOCX ZIP extraction, declarative serde-based XML parser, style and numbering resolution |
 | `render/layout` | Measure → layout → paint pipeline: fragment-based line fitting, paragraph layout, three-pass table layout, header/footer handling |
 | `render/painter` | Skia canvas operations for PDF output |
 | `render/fonts` | Font resolution with metric-compatible substitution (e.g., Calibri → Carlito, Cambria → Caladea) |
@@ -234,7 +234,9 @@ Validated against ISO 29500 (Office Open XML). **37 features fully implemented, 
 | Border styles (single) | ✅ |
 | Border styles (double, dashed, dotted) | ⚠️ render as single |
 | Cell shading (solid) | ✅ |
-| Cell shading (patterns), vertical alignment | ❌ |
+| Cell shading (patterns) | ❌ |
+| Vertical alignment (top / center / bottom) | ✅ incl. vMerge-aware bottom alignment |
+| Row splitting across page breaks | ✅ §17.4.1 `cantSplit` honored |
 | Nested tables | ✅ |
 
 ### Images
@@ -286,7 +288,8 @@ Validated against ISO 29500 (Office Open XML). **37 features fully implemented, 
 |---|---|
 | Footnotes/endnotes | ❌ warned |
 | Comments, tracked changes | ❌ / ⚠️ |
-| Text boxes, shapes, SmartArt, charts | ❌ |
+| DrawingML shapes (preset geometry, fill, stroke, outer shadow) | ⚠️ Tier 0-1 coverage |
+| Text boxes, SmartArt, charts | ❌ |
 | RTL text, automatic hyphenation | ❌ |
 
 </details>
@@ -295,7 +298,7 @@ Validated against ISO 29500 (Office Open XML). **37 features fully implemented, 
 
 | Crate | Purpose |
 |---|---|
-| [`quick-xml`](https://crates.io/crates/quick-xml) | Event-driven XML parsing |
+| [`quick-xml`](https://crates.io/crates/quick-xml) | Declarative XML parsing via serde deserializers |
 | [`zip`](https://crates.io/crates/zip) | DOCX ZIP archive reading |
 | [`skia-safe`](https://crates.io/crates/skia-safe) | PDF rendering, text measurement, link annotations |
 | [`clap`](https://crates.io/crates/clap) | CLI argument parsing |
