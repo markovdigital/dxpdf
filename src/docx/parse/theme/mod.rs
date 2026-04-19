@@ -9,7 +9,11 @@ mod script;
 use serde::Deserialize;
 
 use crate::docx::error::Result;
-use crate::docx::model::{Theme, ThemeColorScheme, ThemeFontScheme, ThemeScriptFont};
+use crate::docx::model::{
+    EffectList, Outline, Theme, ThemeColorScheme, ThemeFontScheme, ThemeScriptFont,
+};
+use crate::docx::parse::drawing::schema::effect::EffectListXml;
+use crate::docx::parse::drawing::schema::stroke::OutlineXml;
 use crate::docx::parse::primitives::HexColor;
 use crate::docx::parse::serde_xml::from_xml;
 
@@ -34,6 +38,37 @@ struct ThemeElementsXml {
     clr_scheme: Option<ClrSchemeXml>,
     #[serde(rename = "fontScheme", default)]
     font_scheme: Option<FontSchemeXml>,
+    #[serde(rename = "fmtScheme", default)]
+    fmt_scheme: Option<FmtSchemeXml>,
+}
+
+#[derive(Deserialize, Default)]
+struct FmtSchemeXml {
+    #[serde(rename = "lnStyleLst", default)]
+    ln_style_lst: Option<LnStyleLstXml>,
+    #[serde(rename = "effectStyleLst", default)]
+    effect_style_lst: Option<EffectStyleLstXml>,
+}
+
+/// §20.1.4.1.21 CT_LineStyleList — exactly 3 `<a:ln>` entries per spec.
+#[derive(Deserialize, Default)]
+struct LnStyleLstXml {
+    #[serde(rename = "ln", default)]
+    lines: Vec<OutlineXml>,
+}
+
+#[derive(Deserialize, Default)]
+struct EffectStyleLstXml {
+    #[serde(rename = "effectStyle", default)]
+    effect_styles: Vec<EffectStyleXml>,
+}
+
+/// §20.1.4.1.11 CT_EffectStyleItem — an effect style entry. May include
+/// `scene3d`/`sp3d` siblings (ignored — Tier-3 3D extrusion).
+#[derive(Deserialize, Default)]
+struct EffectStyleXml {
+    #[serde(rename = "effectLst", default)]
+    effect_lst: Option<EffectListXml>,
 }
 
 #[derive(Deserialize, Default)]
@@ -146,6 +181,18 @@ impl From<ThemeXml> for Theme {
                 }
                 if let Some(minor) = fs.minor {
                     theme.minor_font = minor.into();
+                }
+            }
+            if let Some(fmt) = elements.fmt_scheme {
+                if let Some(list) = fmt.ln_style_lst {
+                    theme.line_styles = list.lines.into_iter().map(Outline::from).collect();
+                }
+                if let Some(list) = fmt.effect_style_lst {
+                    theme.effect_styles = list
+                        .effect_styles
+                        .into_iter()
+                        .map(|es| es.effect_lst.map(EffectList::from).unwrap_or_default())
+                        .collect();
                 }
             }
         }
