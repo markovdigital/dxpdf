@@ -11,9 +11,7 @@ use crate::docx::model::{
     PageNumberType, PageSize, RelId, RevisionSaveId, SectionHeaderFooterRefs, SectionProperties,
     SectionRevisionIds, SectionType,
 };
-use crate::docx::parse::primitives::st_enums::{
-    StNumberFormat, StPageOrientation, StSectionMark,
-};
+use crate::docx::parse::primitives::st_enums::{StNumberFormat, StPageOrientation, StSectionMark};
 use crate::docx::parse::primitives::OnOff;
 
 /// `<w:sectPr>` root.
@@ -378,9 +376,18 @@ mod tests {
                 <footerReference id="rId3"/>
             </sectPr>"#,
         );
-        assert_eq!(s.header_refs.default.as_ref().map(|r| r.as_str()), Some("rId1"));
-        assert_eq!(s.header_refs.first.as_ref().map(|r| r.as_str()), Some("rId2"));
-        assert_eq!(s.footer_refs.default.as_ref().map(|r| r.as_str()), Some("rId3"));
+        assert_eq!(
+            s.header_refs.default.as_ref().map(|r| r.as_str()),
+            Some("rId1")
+        );
+        assert_eq!(
+            s.header_refs.first.as_ref().map(|r| r.as_str()),
+            Some("rId2")
+        );
+        assert_eq!(
+            s.footer_refs.default.as_ref().map(|r| r.as_str()),
+            Some("rId3")
+        );
     }
 
     #[test]
@@ -397,12 +404,30 @@ mod tests {
                 <footerReference id="rId11" type="first"/>
             </sectPr>"#,
         );
-        assert_eq!(s.header_refs.even.as_ref().map(|r| r.as_str()), Some("rId6"));
-        assert_eq!(s.header_refs.default.as_ref().map(|r| r.as_str()), Some("rId7"));
-        assert_eq!(s.header_refs.first.as_ref().map(|r| r.as_str()), Some("rId10"));
-        assert_eq!(s.footer_refs.even.as_ref().map(|r| r.as_str()), Some("rId8"));
-        assert_eq!(s.footer_refs.default.as_ref().map(|r| r.as_str()), Some("rId9"));
-        assert_eq!(s.footer_refs.first.as_ref().map(|r| r.as_str()), Some("rId11"));
+        assert_eq!(
+            s.header_refs.even.as_ref().map(|r| r.as_str()),
+            Some("rId6")
+        );
+        assert_eq!(
+            s.header_refs.default.as_ref().map(|r| r.as_str()),
+            Some("rId7")
+        );
+        assert_eq!(
+            s.header_refs.first.as_ref().map(|r| r.as_str()),
+            Some("rId10")
+        );
+        assert_eq!(
+            s.footer_refs.even.as_ref().map(|r| r.as_str()),
+            Some("rId8")
+        );
+        assert_eq!(
+            s.footer_refs.default.as_ref().map(|r| r.as_str()),
+            Some("rId9")
+        );
+        assert_eq!(
+            s.footer_refs.first.as_ref().map(|r| r.as_str()),
+            Some("rId11")
+        );
     }
 
     #[test]
@@ -419,7 +444,9 @@ mod tests {
 
     #[test]
     fn page_num_type_with_chap_sep() {
-        let s = parse(r#"<sectPr><pgNumType fmt="decimal" start="1" chapStyle="1" chapSep="emDash"/></sectPr>"#);
+        let s = parse(
+            r#"<sectPr><pgNumType fmt="decimal" start="1" chapStyle="1" chapSep="emDash"/></sectPr>"#,
+        );
         let p = s.page_number_type.unwrap();
         assert_eq!(p.format, Some(NumberFormat::Decimal));
         assert_eq!(p.start, Some(1));

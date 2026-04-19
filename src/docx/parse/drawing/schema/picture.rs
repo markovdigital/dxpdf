@@ -8,9 +8,7 @@
 
 use serde::Deserialize;
 
-use crate::docx::model::{
-    CnvPicProperties, DocProperties, NvPicProperties, PicLocks, Picture,
-};
+use crate::docx::model::{CnvPicProperties, DocProperties, NvPicProperties, PicLocks, Picture};
 
 use super::fill::{AttrBool, BlipFillXml};
 use super::shape::SpPrXml;
@@ -177,7 +175,11 @@ mod tests {
         assert_eq!(p.nv_pic_pr.cnv_pr.name, "image1");
         assert!(p.nv_pic_pr.cnv_pic_pr.is_none());
         assert_eq!(
-            p.blip_fill.blip.as_ref().and_then(|b| b.embed.as_ref()).map(|r| r.as_str()),
+            p.blip_fill
+                .blip
+                .as_ref()
+                .and_then(|b| b.embed.as_ref())
+                .map(|r| r.as_str()),
             Some("rId1")
         );
         assert!(matches!(p.blip_fill.fill_kind, BlipFillKind::Stretch(_)));
@@ -193,7 +195,10 @@ mod tests {
                 <blipFill><blip r:embed="rId2"/></blipFill>
             </pic>"#,
         );
-        assert_eq!(p.nv_pic_pr.cnv_pr.description.as_deref(), Some("Company logo"));
+        assert_eq!(
+            p.nv_pic_pr.cnv_pr.description.as_deref(),
+            Some("Company logo")
+        );
         assert_eq!(p.nv_pic_pr.cnv_pr.title.as_deref(), Some("Logo"));
     }
 
@@ -210,7 +215,11 @@ mod tests {
         );
         assert_eq!(p.nv_pic_pr.cnv_pr.hidden, Some(true));
         assert_eq!(
-            p.nv_pic_pr.cnv_pic_pr.as_ref().unwrap().prefer_relative_resize,
+            p.nv_pic_pr
+                .cnv_pic_pr
+                .as_ref()
+                .unwrap()
+                .prefer_relative_resize,
             Some(false)
         );
     }
@@ -274,7 +283,10 @@ mod tests {
                 </blipFill>
             </pic>"#,
         );
-        assert_eq!(p.blip_fill.src_rect.as_ref().unwrap().left.unwrap().raw(), 5000);
+        assert_eq!(
+            p.blip_fill.src_rect.as_ref().unwrap().left.unwrap().raw(),
+            5000
+        );
         assert_eq!(
             p.blip_fill.blip.as_ref().unwrap().compression,
             Some(crate::docx::model::BlipCompression::Hqprint)

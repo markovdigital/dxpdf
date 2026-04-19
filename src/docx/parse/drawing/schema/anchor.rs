@@ -185,10 +185,7 @@ pub(crate) struct InlineXml {
 }
 
 impl InlineXml {
-    pub(crate) fn into_image(
-        self,
-        ctx: &mut crate::docx::parse::body::ConvertCtx,
-    ) -> Image {
+    pub(crate) fn into_image(self, ctx: &mut crate::docx::parse::body::ConvertCtx) -> Image {
         let distance = EdgeInsets::new(
             self.dist_t.unwrap_or_default(),
             self.dist_r.unwrap_or_default(),
@@ -433,19 +430,14 @@ impl From<StWrapText> for WrapText {
 }
 
 impl AnchorXml {
-    pub(crate) fn into_image(
-        self,
-        ctx: &mut crate::docx::parse::body::ConvertCtx,
-    ) -> Image {
+    pub(crate) fn into_image(self, ctx: &mut crate::docx::parse::body::ConvertCtx) -> Image {
         let distance = EdgeInsets::new(
             self.dist_t.unwrap_or_default(),
             self.dist_r.unwrap_or_default(),
             self.dist_b.unwrap_or_default(),
             self.dist_l.unwrap_or_default(),
         );
-        let simple_pos = self
-            .simple_pos
-            .map(|s| Offset::new(s.x, s.y));
+        let simple_pos = self.simple_pos.map(|s| Offset::new(s.x, s.y));
         let use_simple_pos = self.simple_pos_attr.map(|b| b.0);
         let horizontal_position = position(self.pos_h);
         let vertical_position = position(self.pos_v);
@@ -675,7 +667,10 @@ mod tests {
         assert!(!a.behind_text);
         assert!(a.allow_overlap);
         match a.horizontal_position {
-            AnchorPosition::Offset { relative_from, offset } => {
+            AnchorPosition::Offset {
+                relative_from,
+                offset,
+            } => {
                 assert_eq!(relative_from, AnchorRelativeFrom::Column);
                 assert_eq!(offset.raw(), 1_524_000);
             }
@@ -711,7 +706,10 @@ mod tests {
             panic!("expected Anchor");
         };
         match a.horizontal_position {
-            AnchorPosition::Align { relative_from, alignment } => {
+            AnchorPosition::Align {
+                relative_from,
+                alignment,
+            } => {
                 assert_eq!(relative_from, AnchorRelativeFrom::Page);
                 assert_eq!(alignment, AnchorAlignment::Center);
             }
@@ -747,7 +745,9 @@ mod tests {
             panic!("expected Anchor");
         };
         match &a.wrap {
-            TextWrap::Tight { polygon: Some(p), .. } => {
+            TextWrap::Tight {
+                polygon: Some(p), ..
+            } => {
                 assert_eq!(p.line_to.len(), 3);
                 assert_eq!(p.start.x.raw(), 0);
                 assert_eq!(p.edited, Some(false));
@@ -776,7 +776,10 @@ mod tests {
             panic!("expected Anchor");
         };
         match &a.wrap {
-            TextWrap::TopAndBottom { distance_top, distance_bottom } => {
+            TextWrap::TopAndBottom {
+                distance_top,
+                distance_bottom,
+            } => {
                 assert_eq!(distance_top.raw(), 181_610);
                 assert_eq!(distance_bottom.raw(), 181_610);
             }
@@ -823,6 +826,9 @@ mod tests {
                 </graphicData></graphic>
             </inline>"#,
         );
-        assert!(matches!(img.graphic, Some(GraphicContent::WordProcessingShape(_))));
+        assert!(matches!(
+            img.graphic,
+            Some(GraphicContent::WordProcessingShape(_))
+        ));
     }
 }

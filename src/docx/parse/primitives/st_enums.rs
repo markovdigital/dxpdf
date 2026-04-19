@@ -929,10 +929,7 @@ mod tests {
         assert_eq!(de::<StJc>("both").unwrap(), StJc::Both);
         assert_eq!(de::<StJc>("justify").unwrap(), StJc::Both); // alias
         assert_eq!(de::<StJc>("distribute").unwrap(), StJc::Distribute);
-        assert_eq!(
-            de::<StJc>("thaiDistribute").unwrap(),
-            StJc::ThaiDistribute
-        );
+        assert_eq!(de::<StJc>("thaiDistribute").unwrap(), StJc::ThaiDistribute);
     }
     #[test]
     fn jc_strict() {
@@ -948,7 +945,10 @@ mod tests {
     // ── StNumberFormat ──
     #[test]
     fn number_format_all_variants() {
-        assert_eq!(de::<StNumberFormat>("decimal").unwrap(), StNumberFormat::Decimal);
+        assert_eq!(
+            de::<StNumberFormat>("decimal").unwrap(),
+            StNumberFormat::Decimal
+        );
         assert_eq!(
             de::<StNumberFormat>("upperRoman").unwrap(),
             StNumberFormat::UpperRoman
@@ -957,7 +957,10 @@ mod tests {
             de::<StNumberFormat>("cardinalText").unwrap(),
             StNumberFormat::CardinalText
         );
-        assert_eq!(de::<StNumberFormat>("bullet").unwrap(), StNumberFormat::Bullet);
+        assert_eq!(
+            de::<StNumberFormat>("bullet").unwrap(),
+            StNumberFormat::Bullet
+        );
     }
     #[test]
     fn number_format_strict() {
@@ -1028,7 +1031,10 @@ mod tests {
     // ── StTblLayoutType ──
     #[test]
     fn tbl_layout_type_both() {
-        assert_eq!(de::<StTblLayoutType>("auto").unwrap(), StTblLayoutType::Auto);
+        assert_eq!(
+            de::<StTblLayoutType>("auto").unwrap(),
+            StTblLayoutType::Auto
+        );
         assert_eq!(
             de::<StTblLayoutType>("fixed").unwrap(),
             StTblLayoutType::Fixed
@@ -1042,7 +1048,10 @@ mod tests {
     // ── StTblOverlap ──
     #[test]
     fn tbl_overlap_both() {
-        assert_eq!(de::<StTblOverlap>("overlap").unwrap(), StTblOverlap::Overlap);
+        assert_eq!(
+            de::<StTblOverlap>("overlap").unwrap(),
+            StTblOverlap::Overlap
+        );
         assert_eq!(de::<StTblOverlap>("never").unwrap(), StTblOverlap::Never);
     }
     #[test]
@@ -1053,7 +1062,10 @@ mod tests {
     // ── StTextAlignment ──
     #[test]
     fn text_alignment_all_variants() {
-        assert_eq!(de::<StTextAlignment>("auto").unwrap(), StTextAlignment::Auto);
+        assert_eq!(
+            de::<StTextAlignment>("auto").unwrap(),
+            StTextAlignment::Auto
+        );
         assert_eq!(de::<StTextAlignment>("top").unwrap(), StTextAlignment::Top);
         assert_eq!(
             de::<StTextAlignment>("center").unwrap(),
@@ -1076,9 +1088,18 @@ mod tests {
     // ── StTextDirection ──
     #[test]
     fn text_direction_all_variants() {
-        assert_eq!(de::<StTextDirection>("lrTb").unwrap(), StTextDirection::LrTb);
-        assert_eq!(de::<StTextDirection>("tbRl").unwrap(), StTextDirection::TbRl);
-        assert_eq!(de::<StTextDirection>("btLr").unwrap(), StTextDirection::BtLr);
+        assert_eq!(
+            de::<StTextDirection>("lrTb").unwrap(),
+            StTextDirection::LrTb
+        );
+        assert_eq!(
+            de::<StTextDirection>("tbRl").unwrap(),
+            StTextDirection::TbRl
+        );
+        assert_eq!(
+            de::<StTextDirection>("btLr").unwrap(),
+            StTextDirection::BtLr
+        );
         assert_eq!(
             de::<StTextDirection>("lrTbV").unwrap(),
             StTextDirection::LrTbV
@@ -1139,7 +1160,10 @@ mod tests {
             de::<StUnderline>("dashDotHeavy").unwrap(),
             StUnderline::DashDotHeavy
         );
-        assert_eq!(de::<StUnderline>("wavyDouble").unwrap(), StUnderline::WavyDouble);
+        assert_eq!(
+            de::<StUnderline>("wavyDouble").unwrap(),
+            StUnderline::WavyDouble
+        );
     }
     #[test]
     fn underline_strict() {

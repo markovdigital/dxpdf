@@ -153,11 +153,13 @@ struct SpacingXml {
 
 impl From<SpacingXml> for ParagraphSpacing {
     fn from(x: SpacingXml) -> Self {
-        let line = x.line.map(|v| match x.line_rule.unwrap_or(StLineSpacingRule::Auto) {
-            StLineSpacingRule::Auto => LineSpacing::Auto(v),
-            StLineSpacingRule::Exact => LineSpacing::Exact(v),
-            StLineSpacingRule::AtLeast => LineSpacing::AtLeast(v),
-        });
+        let line = x
+            .line
+            .map(|v| match x.line_rule.unwrap_or(StLineSpacingRule::Auto) {
+                StLineSpacingRule::Auto => LineSpacing::Auto(v),
+                StLineSpacingRule::Exact => LineSpacing::Exact(v),
+                StLineSpacingRule::AtLeast => LineSpacing::AtLeast(v),
+            });
         Self {
             before: x.before,
             after: x.after,
@@ -332,7 +334,10 @@ mod tests {
     #[test]
     fn p_style_routed_separately() {
         let r = parse(r#"<pPr><pStyle val="Heading1"/></pPr>"#);
-        assert_eq!(r.style_id.map(|s| s.as_str().to_string()), Some("Heading1".into()));
+        assert_eq!(
+            r.style_id.map(|s| s.as_str().to_string()),
+            Some("Heading1".into())
+        );
         assert_eq!(r.properties.alignment, None);
     }
 
@@ -413,9 +418,7 @@ mod tests {
 
     #[test]
     fn nested_sect_pr_routed_separately() {
-        let r = parse(
-            r#"<pPr><sectPr><pgSz w="12240" h="15840"/></sectPr></pPr>"#,
-        );
+        let r = parse(r#"<pPr><sectPr><pgSz w="12240" h="15840"/></sectPr></pPr>"#);
         let sp = r.section_properties.unwrap();
         assert_eq!(sp.page_size.unwrap().width.unwrap().raw(), 12240);
     }

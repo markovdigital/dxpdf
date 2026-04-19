@@ -55,6 +55,10 @@ mod tests {
     #[test]
     fn non_integer_rejected() {
         let r: Result<TwipsVal, _> = quick_xml::de::from_str(r#"<x val="abc"/>"#);
-        assert!(r.is_err(), "expected error, got {:?}", r.map(|v| v.val.raw()));
+        assert!(
+            r.is_err(),
+            "expected error, got {:?}",
+            r.map(|v| v.val.raw())
+        );
     }
 }

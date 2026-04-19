@@ -5,9 +5,8 @@ use serde::Deserialize;
 
 use crate::docx::error::Result;
 use crate::docx::model::{
-    AbstractNumId, AbstractNumbering, Alignment, Indentation, NumId, NumPicBullet,
-    NumPicBulletId, NumberFormat, NumberingDefinitions, NumberingInstance,
-    NumberingLevelDefinition, RunProperties,
+    AbstractNumId, AbstractNumbering, Alignment, Indentation, NumId, NumPicBullet, NumPicBulletId,
+    NumberFormat, NumberingDefinitions, NumberingInstance, NumberingLevelDefinition, RunProperties,
 };
 use crate::docx::parse::primitives::st_enums::{StJc, StNumberFormat};
 use crate::docx::parse::properties::schema::paragraph::PPrXml;
@@ -110,11 +109,16 @@ impl From<NumberingXml> for NumberingDefinitions {
         let mut defs = NumberingDefinitions::default();
         for a in x.abstract_nums {
             let id = AbstractNumId::new(a.abstract_num_id);
-            defs.abstract_nums
-                .insert(id, AbstractNumbering { levels: a.levels.into_iter().map(Into::into).collect() });
+            defs.abstract_nums.insert(
+                id,
+                AbstractNumbering {
+                    levels: a.levels.into_iter().map(Into::into).collect(),
+                },
+            );
         }
         for n in x.nums {
-            defs.numbering_instances.insert(NumId::new(n.num_id), convert_num(n));
+            defs.numbering_instances
+                .insert(NumId::new(n.num_id), convert_num(n));
         }
         // Picture bullets may contain a VML `<w:pict>` (e.g., an imagedata
         // reference). Numbering has no body content, so no embeds crossing

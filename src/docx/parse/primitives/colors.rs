@@ -111,7 +111,10 @@ mod tests {
     #[test]
     fn rgb_hex_rejects_auto() {
         let r: Result<RgbVal, _> = quick_xml::de::from_str(r#"<x val="auto"/>"#);
-        assert!(r.is_err(), "RgbHexU32 must reject 'auto' per ST_HexColorRGB");
+        assert!(
+            r.is_err(),
+            "RgbHexU32 must reject 'auto' per ST_HexColorRGB"
+        );
     }
 
     #[test]

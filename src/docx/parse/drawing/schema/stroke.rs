@@ -400,8 +400,14 @@ mod tests {
 
     #[test]
     fn join_round_bevel_miter() {
-        assert!(matches!(parse(r#"<ln><round/></ln>"#).join, Some(LineJoin::Round)));
-        assert!(matches!(parse(r#"<ln><bevel/></ln>"#).join, Some(LineJoin::Bevel)));
+        assert!(matches!(
+            parse(r#"<ln><round/></ln>"#).join,
+            Some(LineJoin::Round)
+        ));
+        assert!(matches!(
+            parse(r#"<ln><bevel/></ln>"#).join,
+            Some(LineJoin::Bevel)
+        ));
         match parse(r#"<ln><miter lim="800000"/></ln>"#).join {
             Some(LineJoin::Miter { limit: Some(d) }) => assert_eq!(d.raw(), 800000),
             other => panic!("expected Miter, got {other:?}"),
@@ -439,7 +445,10 @@ mod tests {
         assert_eq!(o.width.unwrap().raw(), 9525);
         assert_eq!(o.cap, Some(LineCap::Round));
         assert!(matches!(o.fill, Some(DrawingFill::Solid(_))));
-        assert!(matches!(o.dash, Some(LineDash::Preset(PresetLineDashVal::Solid))));
+        assert!(matches!(
+            o.dash,
+            Some(LineDash::Preset(PresetLineDashVal::Solid))
+        ));
         assert_eq!(o.join, Some(LineJoin::Round));
         assert_eq!(o.tail_end.unwrap().kind, LineEndType::Triangle);
     }

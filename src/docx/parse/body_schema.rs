@@ -270,7 +270,6 @@ pub(crate) struct DrawingXml {
     pub anchor: Option<crate::docx::parse::drawing::schema::anchor::AnchorXml>,
 }
 
-
 // ── hyperlink ──────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]

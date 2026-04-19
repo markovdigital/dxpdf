@@ -9,9 +9,7 @@
 use serde::Deserialize;
 
 use crate::docx::model::dimension::{Dimension, EighthPoints, Points};
-use crate::docx::model::{
-    Border, Color, ParagraphBorders, TableBorders, TableCellBorders,
-};
+use crate::docx::model::{Border, Color, ParagraphBorders, TableBorders, TableCellBorders};
 use crate::docx::parse::primitives::st_enums::StBorderType;
 use crate::docx::parse::primitives::HexColor;
 
@@ -165,8 +163,14 @@ mod tests {
         let px: ParagraphBordersXml = quick_xml::de::from_str(xml).unwrap();
         let p: ParagraphBorders = px.into();
         assert!(p.top.is_some());
-        assert_eq!(p.left.unwrap().style, crate::docx::model::BorderStyle::Double);
-        assert_eq!(p.right.unwrap().style, crate::docx::model::BorderStyle::Thick);
+        assert_eq!(
+            p.left.unwrap().style,
+            crate::docx::model::BorderStyle::Double
+        );
+        assert_eq!(
+            p.right.unwrap().style,
+            crate::docx::model::BorderStyle::Thick
+        );
     }
 
     #[test]

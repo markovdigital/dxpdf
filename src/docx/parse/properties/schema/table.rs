@@ -9,12 +9,12 @@ use serde::Deserialize;
 use crate::docx::model::dimension::Twips;
 use crate::docx::model::geometry::EdgeInsets;
 use crate::docx::model::{
-    Alignment, CnfStyle, StyleId, TableLook, TableProperties, TablePositioning,
-    TableRowHeight, TableRowProperties, TableCellProperties, VerticalMerge,
+    Alignment, CnfStyle, StyleId, TableCellProperties, TableLook, TablePositioning,
+    TableProperties, TableRowHeight, TableRowProperties, VerticalMerge,
 };
 use crate::docx::parse::primitives::st_enums::{
-    StAnchor, StHeightRule, StJc, StTblLayoutType, StTblOverlap, StTextDirection,
-    StVerticalJc, StXAlign, StYAlign,
+    StAnchor, StHeightRule, StJc, StTblLayoutType, StTblOverlap, StTextDirection, StVerticalJc,
+    StXAlign, StYAlign,
 };
 use crate::docx::parse::primitives::OnOff;
 
@@ -325,7 +325,10 @@ mod tests {
         let (tp, sid) = parse_tbl_pr(
             r#"<tblPr><tblStyle val="TableGrid"/><tblW w="5000" type="pct"/></tblPr>"#,
         );
-        assert_eq!(sid.map(|s| s.as_str().to_string()), Some("TableGrid".into()));
+        assert_eq!(
+            sid.map(|s| s.as_str().to_string()),
+            Some("TableGrid".into())
+        );
         match tp.width.unwrap() {
             TableMeasure::Pct(d) => assert_eq!(d.raw(), 5000),
             other => panic!("expected Pct, got {other:?}"),
@@ -334,9 +337,7 @@ mod tests {
 
     #[test]
     fn tbl_pr_layout_and_alignment() {
-        let (tp, _) = parse_tbl_pr(
-            r#"<tblPr><jc val="center"/><tblLayout type="fixed"/></tblPr>"#,
-        );
+        let (tp, _) = parse_tbl_pr(r#"<tblPr><jc val="center"/><tblLayout type="fixed"/></tblPr>"#);
         assert_eq!(tp.layout, Some(TableLayout::Fixed));
         assert_eq!(tp.alignment, Some(Alignment::Center));
     }
@@ -357,9 +358,8 @@ mod tests {
 
     #[test]
     fn tbl_pr_tbl_look_attrs() {
-        let (tp, _) = parse_tbl_pr(
-            r#"<tblPr><tblLook firstRow="1" lastRow="0" noHBand="true"/></tblPr>"#,
-        );
+        let (tp, _) =
+            parse_tbl_pr(r#"<tblPr><tblLook firstRow="1" lastRow="0" noHBand="true"/></tblPr>"#);
         let l = tp.look.unwrap();
         assert_eq!(l.first_row, Some(true));
         assert_eq!(l.last_row, Some(false));
@@ -379,14 +379,8 @@ mod tests {
         let pos = tp.positioning.unwrap();
         assert_eq!(pos.x.unwrap().raw(), 100);
         assert_eq!(pos.y.unwrap().raw(), 200);
-        assert_eq!(
-            pos.vert_anchor,
-            Some(crate::docx::model::TableAnchor::Page)
-        );
-        assert_eq!(
-            pos.x_align,
-            Some(crate::docx::model::TableXAlign::Center)
-        );
+        assert_eq!(pos.vert_anchor, Some(crate::docx::model::TableAnchor::Page));
+        assert_eq!(pos.x_align, Some(crate::docx::model::TableXAlign::Center));
     }
 
     // ── trPr ──
@@ -413,9 +407,7 @@ mod tests {
 
     #[test]
     fn tr_pr_grid_after_and_w_after() {
-        let tr = parse_tr_pr(
-            r#"<trPr><gridAfter val="2"/><wAfter w="500" type="dxa"/></trPr>"#,
-        );
+        let tr = parse_tr_pr(r#"<trPr><gridAfter val="2"/><wAfter w="500" type="dxa"/></trPr>"#);
         assert_eq!(tr.grid_after, Some(2));
         match tr.w_after.unwrap() {
             TableMeasure::Twips(d) => assert_eq!(d.raw(), 500),
@@ -462,18 +454,17 @@ mod tests {
 
     #[test]
     fn tc_pr_grid_span_and_text_direction() {
-        let tc = parse_tc_pr(
-            r#"<tcPr><gridSpan val="3"/><textDirection val="tbRl"/></tcPr>"#,
-        );
+        let tc = parse_tc_pr(r#"<tcPr><gridSpan val="3"/><textDirection val="tbRl"/></tcPr>"#);
         assert_eq!(tc.grid_span, Some(3));
-        assert_eq!(tc.text_direction, Some(TextDirection::TopToBottomRightToLeft));
+        assert_eq!(
+            tc.text_direction,
+            Some(TextDirection::TopToBottomRightToLeft)
+        );
     }
 
     #[test]
     fn tc_pr_no_wrap_and_cnf_style() {
-        let tc = parse_tc_pr(
-            r#"<tcPr><noWrap/><cnfStyle val="100000000000"/></tcPr>"#,
-        );
+        let tc = parse_tc_pr(r#"<tcPr><noWrap/><cnfStyle val="100000000000"/></tcPr>"#);
         assert_eq!(tc.no_wrap, Some(true));
         assert_eq!(tc.cnf_style, Some(CnfStyle::FIRST_ROW));
     }

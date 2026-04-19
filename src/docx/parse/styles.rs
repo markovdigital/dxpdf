@@ -247,11 +247,7 @@ fn convert_style(s: StyleXml) -> Option<(StyleId, Style)> {
 
     let table_properties = s.tbl_pr.map(|t| t.split().0);
 
-    let table_style_overrides = s
-        .tbl_style_pr
-        .into_iter()
-        .map(convert_override)
-        .collect();
+    let table_style_overrides = s.tbl_style_pr.into_iter().map(convert_override).collect();
 
     Some((
         id,

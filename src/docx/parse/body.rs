@@ -89,8 +89,7 @@ pub(crate) fn convert_container(
             BlockChildXml::Sdt(sdt) => {
                 // Flatten SDT wrapper — treat its content as block-level.
                 if let Some(content) = sdt.content {
-                    let (nested_blocks, nested_sect) =
-                        convert_container(content.children, ctx);
+                    let (nested_blocks, nested_sect) = convert_container(content.children, ctx);
                     blocks.extend(nested_blocks);
                     if nested_sect.is_some() {
                         final_section = nested_sect;
@@ -123,9 +122,13 @@ fn convert_paragraph(p: ParaXml, ctx: &mut ConvertCtx) -> (Paragraph, Option<Sec
     // *and* in the enum, serde prefers the dedicated field — but just in
     // case, we merge from both sources).
     let p_pr = p.p_pr.or_else(|| {
-        p.content
-            .iter()
-            .find_map(|c| if let ParaChildXml::PPr(pp) = c { Some((**pp).clone()) } else { None })
+        p.content.iter().find_map(|c| {
+            if let ParaChildXml::PPr(pp) = c {
+                Some((**pp).clone())
+            } else {
+                None
+            }
+        })
     });
 
     let parsed_p_pr = p_pr.map(|pp| pp.split());
@@ -183,10 +186,7 @@ fn extend_from_run(r: RunXml, out: &mut Vec<Inline>, ctx: &mut ConvertCtx) {
         r_pr: hex_rsid(r.rsid_r_pr.as_deref()),
         del: hex_rsid(r.rsid_del.as_deref()),
     };
-    let (props, style_id) = r
-        .r_pr
-        .map(|rp| rp.split())
-        .unwrap_or_default();
+    let (props, style_id) = r.r_pr.map(|rp| rp.split()).unwrap_or_default();
 
     let mut acc: Vec<RunElement> = Vec::new();
     let flush = |acc: &mut Vec<RunElement>, out: &mut Vec<Inline>| {
@@ -368,9 +368,7 @@ fn convert_alt_content(a: AltContentXml, ctx: &mut ConvertCtx) -> AlternateConte
             Some(McChoice { requires, content })
         })
         .collect();
-    let fallback = a
-        .fallback
-        .map(|f| convert_mc_content(f.content, ctx));
+    let fallback = a.fallback.map(|f| convert_mc_content(f.content, ctx));
     AlternateContent { choices, fallback }
 }
 
@@ -411,7 +409,10 @@ fn convert_mc_content(items: Vec<McContentXml>, ctx: &mut ConvertCtx) -> Vec<Inl
 
 /// Convert a serde-parsed `<w:drawing>` into the model's `Image`. Returns
 /// `None` when neither `<wp:inline>` nor `<wp:anchor>` is present.
-fn drawing_to_image(d: crate::docx::parse::body_schema::DrawingXml, ctx: &mut ConvertCtx) -> Option<Image> {
+fn drawing_to_image(
+    d: crate::docx::parse::body_schema::DrawingXml,
+    ctx: &mut ConvertCtx,
+) -> Option<Image> {
     if let Some(inline) = d.inline {
         return Some(inline.into_image(ctx));
     }

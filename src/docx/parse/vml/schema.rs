@@ -36,17 +36,10 @@ pub(crate) struct PictXml {
 impl PictXml {
     /// Convert to the model; `ctx` resolves embedded drawings nested inside
     /// VML text box content (same iterator threading as shape).
-    pub(crate) fn into_model(
-        self,
-        ctx: &mut crate::docx::parse::body::ConvertCtx,
-    ) -> Pict {
+    pub(crate) fn into_model(self, ctx: &mut crate::docx::parse::body::ConvertCtx) -> Pict {
         Pict {
             shape_type: self.shape_type.map(Into::into),
-            shapes: self
-                .shapes
-                .into_iter()
-                .map(|s| s.into_model(ctx))
-                .collect(),
+            shapes: self.shapes.into_iter().map(|s| s.into_model(ctx)).collect(),
         }
     }
 }
@@ -94,7 +87,12 @@ impl From<ShapeTypeXml> for VmlShapeType {
             vml_path: x.vml_path.map(Into::into),
             formulas: x
                 .formulas
-                .map(|f| f.entries.into_iter().filter_map(|e| parse_formula(&e.eqn)).collect())
+                .map(|f| {
+                    f.entries
+                        .into_iter()
+                        .filter_map(|e| parse_formula(&e.eqn))
+                        .collect()
+                })
                 .unwrap_or_default(),
             lock: x.lock.map(Into::into),
         }
@@ -130,10 +128,7 @@ pub(crate) struct ShapeXml {
 }
 
 impl ShapeXml {
-    fn into_model(
-        self,
-        ctx: &mut crate::docx::parse::body::ConvertCtx,
-    ) -> VmlShape {
+    fn into_model(self, ctx: &mut crate::docx::parse::body::ConvertCtx) -> VmlShape {
         VmlShape {
             id: self.id.map(VmlShapeId::new),
             shape_type_ref: self
@@ -170,10 +165,7 @@ pub(crate) struct TxbxContentXml {
 }
 
 impl TextBoxXml {
-    fn into_model(
-        self,
-        ctx: &mut crate::docx::parse::body::ConvertCtx,
-    ) -> VmlTextBox {
+    fn into_model(self, ctx: &mut crate::docx::parse::body::ConvertCtx) -> VmlTextBox {
         let content: Vec<Block> = self
             .content
             .map(|c| {
@@ -449,15 +441,15 @@ mod tests {
         assert_eq!(st.filled, Some(true));
         assert_eq!(st.stroked, Some(true));
         assert_eq!(st.adj, vec![5400, 5400]);
-        assert_eq!(
-            st.coord_size,
-            Some(VmlVector2D { x: 21600, y: 21600 })
-        );
+        assert_eq!(st.coord_size, Some(VmlVector2D { x: 21600, y: 21600 }));
         assert!(!st.path.is_empty());
         let stroke = st.stroke.unwrap();
         assert_eq!(stroke.dash_style, Some(VmlDashStyle::Dash));
         assert_eq!(stroke.join_style, Some(VmlJoinStyle::Miter));
-        assert_eq!(st.vml_path.unwrap().connect_type, Some(VmlConnectType::Rect));
+        assert_eq!(
+            st.vml_path.unwrap().connect_type,
+            Some(VmlConnectType::Rect)
+        );
         let lock = st.lock.unwrap();
         assert_eq!(lock.aspect_ratio, Some(true));
         assert_eq!(lock.ext, Some(VmlExtHandling::Edit));

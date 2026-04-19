@@ -28,7 +28,6 @@ pub(crate) struct RPrXml {
     #[serde(rename = "sz", default)]
     sz: Option<ValAttr<Dimension<HalfPoints>>>,
     // Complex-script counterparts are intentionally ignored — renderer uses a single size.
-
     #[serde(rename = "b", default)]
     b: Option<OnOff>,
     #[serde(rename = "i", default)]
@@ -328,7 +327,10 @@ mod tests {
             <lang val="en-US"/>
         </rPr>"#;
         let (rp, sid) = parse(xml);
-        assert_eq!(sid.map(|s| s.as_str().to_string()), Some("Heading1Char".into()));
+        assert_eq!(
+            sid.map(|s| s.as_str().to_string()),
+            Some("Heading1Char".into())
+        );
         assert_eq!(rp.fonts.ascii.explicit.as_deref(), Some("Arial"));
         assert_eq!(rp.bold, Some(true));
         assert_eq!(rp.italic, Some(true));

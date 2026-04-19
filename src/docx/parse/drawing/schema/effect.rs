@@ -186,21 +186,52 @@ impl From<StBlendMode> for BlendMode {
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StPresetShadowVal {
-    Shdw1, Shdw2, Shdw3, Shdw4, Shdw5, Shdw6, Shdw7, Shdw8, Shdw9, Shdw10,
-    Shdw11, Shdw12, Shdw13, Shdw14, Shdw15, Shdw16, Shdw17, Shdw18, Shdw19, Shdw20,
+    Shdw1,
+    Shdw2,
+    Shdw3,
+    Shdw4,
+    Shdw5,
+    Shdw6,
+    Shdw7,
+    Shdw8,
+    Shdw9,
+    Shdw10,
+    Shdw11,
+    Shdw12,
+    Shdw13,
+    Shdw14,
+    Shdw15,
+    Shdw16,
+    Shdw17,
+    Shdw18,
+    Shdw19,
+    Shdw20,
 }
 
 impl From<StPresetShadowVal> for PresetShadowVal {
     fn from(s: StPresetShadowVal) -> Self {
         use StPresetShadowVal as X;
         match s {
-            X::Shdw1 => Self::Shdw1, X::Shdw2 => Self::Shdw2, X::Shdw3 => Self::Shdw3,
-            X::Shdw4 => Self::Shdw4, X::Shdw5 => Self::Shdw5, X::Shdw6 => Self::Shdw6,
-            X::Shdw7 => Self::Shdw7, X::Shdw8 => Self::Shdw8, X::Shdw9 => Self::Shdw9,
-            X::Shdw10 => Self::Shdw10, X::Shdw11 => Self::Shdw11, X::Shdw12 => Self::Shdw12,
-            X::Shdw13 => Self::Shdw13, X::Shdw14 => Self::Shdw14, X::Shdw15 => Self::Shdw15,
-            X::Shdw16 => Self::Shdw16, X::Shdw17 => Self::Shdw17, X::Shdw18 => Self::Shdw18,
-            X::Shdw19 => Self::Shdw19, X::Shdw20 => Self::Shdw20,
+            X::Shdw1 => Self::Shdw1,
+            X::Shdw2 => Self::Shdw2,
+            X::Shdw3 => Self::Shdw3,
+            X::Shdw4 => Self::Shdw4,
+            X::Shdw5 => Self::Shdw5,
+            X::Shdw6 => Self::Shdw6,
+            X::Shdw7 => Self::Shdw7,
+            X::Shdw8 => Self::Shdw8,
+            X::Shdw9 => Self::Shdw9,
+            X::Shdw10 => Self::Shdw10,
+            X::Shdw11 => Self::Shdw11,
+            X::Shdw12 => Self::Shdw12,
+            X::Shdw13 => Self::Shdw13,
+            X::Shdw14 => Self::Shdw14,
+            X::Shdw15 => Self::Shdw15,
+            X::Shdw16 => Self::Shdw16,
+            X::Shdw17 => Self::Shdw17,
+            X::Shdw18 => Self::Shdw18,
+            X::Shdw19 => Self::Shdw19,
+            X::Shdw20 => Self::Shdw20,
         }
     }
 }
@@ -210,7 +241,11 @@ impl From<StPresetShadowVal> for PresetShadowVal {
 impl From<EffectListXml> for EffectList {
     fn from(x: EffectListXml) -> Self {
         Self {
-            effects: x.effects.into_iter().filter_map(|e| e.try_into().ok()).collect(),
+            effects: x
+                .effects
+                .into_iter()
+                .filter_map(|e| e.try_into().ok())
+                .collect(),
         }
     }
 }
@@ -285,9 +320,7 @@ fn reflection(r: ReflectionXml) -> ReflectionEffect {
         end_pos: r.end_pos.unwrap_or(Dimension::new(100_000)),
         distance: r.distance.unwrap_or_default(),
         direction: r.direction.unwrap_or_default(),
-        fade_direction: r
-            .fade_direction
-            .unwrap_or(Dimension::new(5_400_000)),
+        fade_direction: r.fade_direction.unwrap_or(Dimension::new(5_400_000)),
         sx: r.sx.unwrap_or(Dimension::new(100_000)),
         sy: r.sy.unwrap_or(Dimension::new(100_000)),
         kx: r.kx.unwrap_or_default(),
@@ -349,7 +382,10 @@ mod tests {
         match &el.effects[0] {
             Effect::Glow(g) => {
                 assert_eq!(g.radius.raw(), 40000);
-                assert!(matches!(g.color, crate::docx::model::DrawingColor::Srgb { rgb: 0xFF0000, .. }));
+                assert!(matches!(
+                    g.color,
+                    crate::docx::model::DrawingColor::Srgb { rgb: 0xFF0000, .. }
+                ));
             }
             other => panic!("expected Glow, got {other:?}"),
         }
@@ -385,7 +421,10 @@ mod tests {
             Effect::InnerShdw(i) => {
                 assert_eq!(i.blur_radius.raw(), 12700);
                 assert_eq!(i.direction.raw(), 13_500_000);
-                assert!(matches!(i.color, crate::docx::model::DrawingColor::Scheme { .. }));
+                assert!(matches!(
+                    i.color,
+                    crate::docx::model::DrawingColor::Scheme { .. }
+                ));
             }
             other => panic!("expected InnerShdw, got {other:?}"),
         }

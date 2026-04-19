@@ -281,10 +281,7 @@ fn guides(l: GdListXml) -> Vec<GeomGuide> {
 
 impl From<AdjPointXml> for AdjPoint {
     fn from(x: AdjPointXml) -> Self {
-        Self {
-            x: x.x.0,
-            y: x.y.0,
-        }
+        Self { x: x.x.0, y: x.y.0 }
     }
 }
 
@@ -481,7 +478,10 @@ mod tests {
         );
         match &g.paths[0].commands[0] {
             PathCommand::ArcTo {
-                wr, hr, start_angle, swing_angle,
+                wr,
+                hr,
+                start_angle,
+                swing_angle,
             } => {
                 assert_eq!(*wr, AdjCoord::Lit(50));
                 assert_eq!(*hr, AdjCoord::Lit(50));
@@ -506,7 +506,11 @@ mod tests {
         assert_eq!(g.ah_list.len(), 1);
         match &g.ah_list[0] {
             AdjustHandle::XY {
-                guide_ref_x, min_x, max_x, position, ..
+                guide_ref_x,
+                min_x,
+                max_x,
+                position,
+                ..
             } => {
                 assert_eq!(guide_ref_x.as_deref(), Some("adj1"));
                 assert_eq!(*min_x, Some(AdjCoord::Lit(0)));
@@ -529,7 +533,11 @@ mod tests {
             </custGeom>"#,
         );
         match &g.ah_list[0] {
-            AdjustHandle::Polar { guide_ref_r, max_ang, .. } => {
+            AdjustHandle::Polar {
+                guide_ref_r,
+                max_ang,
+                ..
+            } => {
                 assert_eq!(guide_ref_r.as_deref(), Some("adj2"));
                 assert_eq!(*max_ang, Some(AdjCoord::Lit(21_600_000)));
             }

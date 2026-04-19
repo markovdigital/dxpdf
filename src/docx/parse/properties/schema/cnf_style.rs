@@ -58,10 +58,26 @@ impl From<CnfStyleXml> for CnfStyle {
         set(&mut bits, CnfStyle::EVEN_V_BAND, x.even_v_band);
         set(&mut bits, CnfStyle::ODD_H_BAND, x.odd_h_band);
         set(&mut bits, CnfStyle::EVEN_H_BAND, x.even_h_band);
-        set(&mut bits, CnfStyle::FIRST_ROW_FIRST_COLUMN, x.first_row_first_column);
-        set(&mut bits, CnfStyle::FIRST_ROW_LAST_COLUMN, x.first_row_last_column);
-        set(&mut bits, CnfStyle::LAST_ROW_FIRST_COLUMN, x.last_row_first_column);
-        set(&mut bits, CnfStyle::LAST_ROW_LAST_COLUMN, x.last_row_last_column);
+        set(
+            &mut bits,
+            CnfStyle::FIRST_ROW_FIRST_COLUMN,
+            x.first_row_first_column,
+        );
+        set(
+            &mut bits,
+            CnfStyle::FIRST_ROW_LAST_COLUMN,
+            x.first_row_last_column,
+        );
+        set(
+            &mut bits,
+            CnfStyle::LAST_ROW_FIRST_COLUMN,
+            x.last_row_first_column,
+        );
+        set(
+            &mut bits,
+            CnfStyle::LAST_ROW_LAST_COLUMN,
+            x.last_row_last_column,
+        );
         bits
     }
 }

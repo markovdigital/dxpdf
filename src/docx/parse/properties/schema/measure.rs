@@ -38,9 +38,7 @@ impl From<TableMeasureXml> for TableMeasure {
             StTblWidthType::Auto => Self::Auto,
             StTblWidthType::Nil => Self::Nil,
             StTblWidthType::Dxa => Self::Twips(Dimension::new(x.w.unwrap_or(0))),
-            StTblWidthType::Pct => {
-                Self::Pct(Dimension::<ThousandthPercent>::new(x.w.unwrap_or(0)))
-            }
+            StTblWidthType::Pct => Self::Pct(Dimension::<ThousandthPercent>::new(x.w.unwrap_or(0))),
         }
     }
 }
