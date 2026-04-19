@@ -134,6 +134,10 @@ pub struct WordProcessingShape {
     pub cnv_pr: Option<DocProperties>,
     /// §20.1.2.2.35: shape properties.
     pub shape_properties: Option<ShapeProperties>,
+    /// §20.1.2.2.45 wps:style / §20.1.4.1.22 a:lnRef — reference to a theme
+    /// line style. Attributes absent from the direct `<a:ln>` inherit from
+    /// the referenced theme line style (e.g. width when `<a:ln>` omits `@w`).
+    pub style_line_ref: Option<StyleMatrixRef>,
     /// §20.1.2.2.45 wps:style / §20.1.4.1.10 a:effectRef — reference to a
     /// theme effect style. Word treats a present-but-empty `<a:effectLst/>`
     /// on spPr as inheritance from this reference, so resolve consults it

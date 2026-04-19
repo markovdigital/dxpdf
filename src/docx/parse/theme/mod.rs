@@ -9,8 +9,11 @@ mod script;
 use serde::Deserialize;
 
 use crate::docx::error::Result;
-use crate::docx::model::{EffectList, Theme, ThemeColorScheme, ThemeFontScheme, ThemeScriptFont};
+use crate::docx::model::{
+    EffectList, Outline, Theme, ThemeColorScheme, ThemeFontScheme, ThemeScriptFont,
+};
 use crate::docx::parse::drawing::schema::effect::EffectListXml;
+use crate::docx::parse::drawing::schema::stroke::OutlineXml;
 use crate::docx::parse::primitives::HexColor;
 use crate::docx::parse::serde_xml::from_xml;
 
@@ -41,8 +44,17 @@ struct ThemeElementsXml {
 
 #[derive(Deserialize, Default)]
 struct FmtSchemeXml {
+    #[serde(rename = "lnStyleLst", default)]
+    ln_style_lst: Option<LnStyleLstXml>,
     #[serde(rename = "effectStyleLst", default)]
     effect_style_lst: Option<EffectStyleLstXml>,
+}
+
+/// §20.1.4.1.21 CT_LineStyleList — exactly 3 `<a:ln>` entries per spec.
+#[derive(Deserialize, Default)]
+struct LnStyleLstXml {
+    #[serde(rename = "ln", default)]
+    lines: Vec<OutlineXml>,
 }
 
 #[derive(Deserialize, Default)]
@@ -172,6 +184,9 @@ impl From<ThemeXml> for Theme {
                 }
             }
             if let Some(fmt) = elements.fmt_scheme {
+                if let Some(list) = fmt.ln_style_lst {
+                    theme.line_styles = list.lines.into_iter().map(Outline::from).collect();
+                }
                 if let Some(list) = fmt.effect_style_lst {
                     theme.effect_styles = list
                         .effect_styles

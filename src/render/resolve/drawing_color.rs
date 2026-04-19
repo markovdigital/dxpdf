@@ -452,6 +452,7 @@ mod tests {
             },
             major_font: ThemeFontScheme::default(),
             minor_font: ThemeFontScheme::default(),
+            line_styles: vec![],
             effect_styles: vec![],
         }
     }

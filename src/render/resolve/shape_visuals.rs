@@ -38,6 +38,7 @@ pub struct ResolvedVisuals {
 /// as an explicit override.
 pub fn resolve_shape_visuals(
     props: Option<&ShapeProperties>,
+    style_line_ref: Option<&StyleMatrixRef>,
     style_effect_ref: Option<&StyleMatrixRef>,
     theme: Option<&Theme>,
 ) -> ResolvedVisuals {
@@ -59,10 +60,11 @@ pub fn resolve_shape_visuals(
         .map(|f| resolve_fill(f, &ctx))
         .unwrap_or(ResolvedFill::None);
 
+    let theme_ln = theme_line_style(style_line_ref, theme);
     let stroke = props
         .outline
         .as_ref()
-        .and_then(|o| resolve_outline(o, &ctx));
+        .and_then(|o| resolve_outline(o, theme_ln, &ctx));
 
     let direct_effects = props
         .effect_list
@@ -80,6 +82,18 @@ pub fn resolve_shape_visuals(
         stroke,
         effects,
     }
+}
+
+/// Look up a theme line style by its 1-based `lnRef` index.
+fn theme_line_style<'a>(
+    style_line_ref: Option<&StyleMatrixRef>,
+    theme: Option<&'a Theme>,
+) -> Option<&'a Outline> {
+    let idx = style_line_ref?.idx;
+    if idx == 0 {
+        return None;
+    }
+    theme?.line_styles.get((idx as usize) - 1)
 }
 
 /// Consult the theme's `effectStyleLst` via a shape's `effectRef`. Returns an
@@ -161,10 +175,16 @@ pub fn resolve_fill(fill: &DrawingFill, ctx: &DrawingColorContext<'_>) -> Resolv
 
 // ── Outline → Stroke ────────────────────────────────────────────────────────
 
-fn resolve_outline(outline: &Outline, ctx: &DrawingColorContext<'_>) -> Option<ResolvedStroke> {
-    // Width: spec default 0.75pt when absent. OOXML `w` is EMU (9525 per pt).
+fn resolve_outline(
+    outline: &Outline,
+    theme_ln: Option<&Outline>,
+    ctx: &DrawingColorContext<'_>,
+) -> Option<ResolvedStroke> {
+    // Width: direct `@w` wins; else theme `lnRef`; else spec default 0.75pt.
+    // OOXML `w` is EMU (12700 per pt).
     let width = outline
         .width
+        .or_else(|| theme_ln.and_then(|t| t.width))
         .map(emu_to_pt)
         .unwrap_or_else(|| Pt::new(0.75));
 
@@ -182,16 +202,19 @@ fn resolve_outline(outline: &Outline, ctx: &DrawingColorContext<'_>) -> Option<R
 
     let cap = outline
         .cap
+        .or_else(|| theme_ln.and_then(|t| t.cap))
         .map(map_line_cap)
         .unwrap_or(ResolvedLineCap::Butt);
     let join = outline
         .join
         .as_ref()
+        .or_else(|| theme_ln.and_then(|t| t.join.as_ref()))
         .map(map_line_join)
         .unwrap_or(ResolvedLineJoin::Round);
     let dash = outline
         .dash
         .as_ref()
+        .or_else(|| theme_ln.and_then(|t| t.dash.as_ref()))
         .map(|d| map_line_dash(d, width))
         .unwrap_or(ResolvedDashPattern::Solid);
 
@@ -337,6 +360,20 @@ mod tests {
         DrawingColor, DrawingFill, EffectList, Outline, PresetLineDashVal, ShapeProperties,
     };
 
+    fn empty_outline() -> Outline {
+        Outline {
+            width: None,
+            cap: None,
+            compound: None,
+            alignment: None,
+            fill: None,
+            dash: None,
+            join: None,
+            head_end: None,
+            tail_end: None,
+        }
+    }
+
     fn shape_props(
         fill: Option<DrawingFill>,
         outline: Option<Outline>,
@@ -354,7 +391,7 @@ mod tests {
 
     #[test]
     fn empty_props_resolves_to_none_visuals() {
-        let v = resolve_shape_visuals(None, None, None);
+        let v = resolve_shape_visuals(None, None, None, None);
         assert!(matches!(v.fill, ResolvedFill::None));
         assert!(v.stroke.is_none());
         assert!(v.effects.is_empty());
@@ -370,7 +407,7 @@ mod tests {
             None,
             None,
         );
-        let v = resolve_shape_visuals(Some(&props), None, None);
+        let v = resolve_shape_visuals(Some(&props), None, None, None);
         let ResolvedFill::Solid(c) = v.fill else {
             panic!()
         };
@@ -394,7 +431,7 @@ mod tests {
             tail_end: None,
         };
         let props = shape_props(None, Some(outline), None);
-        let v = resolve_shape_visuals(Some(&props), None, None);
+        let v = resolve_shape_visuals(Some(&props), None, None, None);
         let s = v.stroke.unwrap();
         assert_eq!(s.width, Pt::new(0.75));
         assert_eq!(s.color.to_rgb24(), 0x0000FF);
@@ -420,7 +457,7 @@ mod tests {
             tail_end: None,
         };
         let props = shape_props(None, Some(outline), None);
-        let v = resolve_shape_visuals(Some(&props), None, None);
+        let v = resolve_shape_visuals(Some(&props), None, None, None);
         let s = v.stroke.unwrap();
         assert_eq!(s.width, Pt::new(0.75));
         assert_eq!(s.color, Rgba::BLACK);
@@ -443,7 +480,7 @@ mod tests {
             tail_end: None,
         };
         let props = shape_props(None, Some(outline), None);
-        let v = resolve_shape_visuals(Some(&props), None, None);
+        let v = resolve_shape_visuals(Some(&props), None, None, None);
         assert!(v.stroke.is_none());
     }
 
@@ -452,6 +489,52 @@ mod tests {
         assert_eq!(emu_to_pt(Dimension::new(12_700)), Pt::new(1.0));
         assert_eq!(emu_to_pt(Dimension::new(9525)), Pt::new(0.75));
         assert_eq!(emu_to_pt(Dimension::new(914_400)), Pt::new(72.0));
+    }
+
+    #[test]
+    fn outline_width_falls_back_to_theme_ln_ref() {
+        use crate::model::DrawingColor;
+        // Shape's `<a:ln>` has only a solid color — width/cap/dash absent.
+        let outline = Outline {
+            width: None,
+            cap: None,
+            compound: None,
+            alignment: None,
+            fill: Some(DrawingFill::Solid(DrawingColor::Srgb {
+                rgb: 0xD99F34,
+                transforms: vec![],
+            })),
+            dash: None,
+            join: None,
+            head_end: None,
+            tail_end: None,
+        };
+        // Theme lnStyleLst[1] = 2pt wide (25400 EMU).
+        let theme_ln = Outline {
+            width: Some(Dimension::new(25_400)),
+            cap: Some(LineCap::Flat),
+            compound: None,
+            alignment: None,
+            fill: None,
+            dash: None,
+            join: None,
+            head_end: None,
+            tail_end: None,
+        };
+        let theme = Theme {
+            line_styles: vec![empty_outline(), theme_ln, empty_outline()],
+            ..Theme::default()
+        };
+        let props = shape_props(None, Some(outline), None);
+        let ln_ref = StyleMatrixRef {
+            idx: 2,
+            color: None,
+        };
+        let v = resolve_shape_visuals(Some(&props), Some(&ln_ref), None, Some(&theme));
+        let s = v.stroke.unwrap();
+        assert_eq!(s.width, Pt::new(2.0));
+        assert_eq!(s.color.to_rgb24(), 0xD99F34);
+        assert_eq!(s.cap, ResolvedLineCap::Butt);
     }
 
     #[test]
@@ -483,7 +566,7 @@ mod tests {
             idx: 1,
             color: None,
         };
-        let v = resolve_shape_visuals(Some(&props), Some(&er), Some(&theme));
+        let v = resolve_shape_visuals(Some(&props), None, Some(&er), Some(&theme));
         assert_eq!(v.effects.len(), 1);
     }
 
@@ -530,7 +613,7 @@ mod tests {
             idx: 1,
             color: None,
         };
-        let v = resolve_shape_visuals(Some(&props), Some(&er), Some(&theme));
+        let v = resolve_shape_visuals(Some(&props), None, Some(&er), Some(&theme));
         let ResolvedEffect::OuterShadow {
             blur_radius, color, ..
         } = &v.effects[0];
@@ -562,7 +645,7 @@ mod tests {
                 effects: vec![Effect::OuterShdw(sh)],
             }),
         );
-        let v = resolve_shape_visuals(Some(&props), None, None);
+        let v = resolve_shape_visuals(Some(&props), None, None, None);
         assert_eq!(v.effects.len(), 1);
         let ResolvedEffect::OuterShadow {
             blur_radius,

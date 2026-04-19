@@ -470,6 +470,8 @@ pub(crate) struct WspXml {
 
 #[derive(Deserialize, Default)]
 pub(crate) struct ShapeStyleXml {
+    #[serde(rename = "lnRef", default)]
+    pub(crate) ln_ref: Option<StyleMatrixRefXml>,
     #[serde(rename = "effectRef", default)]
     pub(crate) effect_ref: Option<StyleMatrixRefXml>,
 }
@@ -520,13 +522,18 @@ impl WspXml {
                 blocks
             })
             .unwrap_or_default();
+        let (style_line_ref, style_effect_ref) = match self.style {
+            Some(s) => (
+                s.ln_ref.map(Into::into),
+                s.effect_ref.map(Into::into),
+            ),
+            None => (None, None),
+        };
         WordProcessingShape {
             cnv_pr: self.cnv_pr.map(Into::into),
             shape_properties: self.sp_pr.map(Into::into),
-            style_effect_ref: self
-                .style
-                .and_then(|s| s.effect_ref)
-                .map(Into::into),
+            style_line_ref,
+            style_effect_ref,
             body_pr: self.body_pr.map(Into::into),
             txbx_content,
         }

@@ -1,6 +1,6 @@
 //! Theme types — color schemes, font schemes, and script tags.
 
-use super::drawing::EffectList;
+use super::drawing::{EffectList, Outline};
 
 /// Resolved theme data from `theme1.xml`.
 #[derive(Clone, Debug, Default)]
@@ -8,6 +8,10 @@ pub struct Theme {
     pub color_scheme: ThemeColorScheme,
     pub major_font: ThemeFontScheme,
     pub minor_font: ThemeFontScheme,
+    /// §20.1.4.1.21 lnStyleLst — theme line styles referenced via
+    /// `<a:lnRef idx="N">`. 0-based in storage — `lnRef idx="1"` is
+    /// `line_styles[0]`.
+    pub line_styles: Vec<Outline>,
     /// §20.1.4.1.12 effectStyleLst — theme effect styles referenced via
     /// `<a:effectRef idx="N">`. Spec requires exactly 3, so the typical
     /// contents are `[subtle, moderate, intense]`. 0-based in storage —

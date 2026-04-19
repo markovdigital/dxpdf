@@ -184,6 +184,7 @@ pub(super) fn extract_floating_shapes(
 
         let visuals = resolve_shape_visuals(
             shape_props,
+            wsp.style_line_ref.as_ref(),
             wsp.style_effect_ref.as_ref(),
             ctx.resolved.theme.as_ref(),
         );
