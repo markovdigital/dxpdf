@@ -523,10 +523,7 @@ impl WspXml {
             })
             .unwrap_or_default();
         let (style_line_ref, style_effect_ref) = match self.style {
-            Some(s) => (
-                s.ln_ref.map(Into::into),
-                s.effect_ref.map(Into::into),
-            ),
+            Some(s) => (s.ln_ref.map(Into::into), s.effect_ref.map(Into::into)),
             None => (None, None),
         };
         WordProcessingShape {

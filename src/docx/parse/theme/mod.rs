@@ -191,11 +191,7 @@ impl From<ThemeXml> for Theme {
                     theme.effect_styles = list
                         .effect_styles
                         .into_iter()
-                        .map(|es| {
-                            es.effect_lst
-                                .map(EffectList::from)
-                                .unwrap_or_default()
-                        })
+                        .map(|es| es.effect_lst.map(EffectList::from).unwrap_or_default())
                         .collect();
                 }
             }

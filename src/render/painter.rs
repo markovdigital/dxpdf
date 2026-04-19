@@ -210,7 +210,14 @@ fn render_page(
                 // §20.1.8 effects render beneath the shape itself, in the
                 // order they appear in the effect list.
                 for effect in effects {
-                    paint_effect(canvas, effect, fill, stroke.as_ref(), &skia_path, &strokable);
+                    paint_effect(
+                        canvas,
+                        effect,
+                        fill,
+                        stroke.as_ref(),
+                        &skia_path,
+                        &strokable,
+                    );
                 }
                 if let Some(paint) = fill_to_paint(fill) {
                     canvas.draw_path(&skia_path, &paint);
