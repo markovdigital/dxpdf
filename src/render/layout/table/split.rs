@@ -65,6 +65,11 @@ pub(super) fn find_row_cut(input: &RowCutInput<'_>) -> Option<SplitCut> {
     let mut cells: Vec<CellCut> = Vec::with_capacity(input.row.cells.len());
     let mut first_half_height = Pt::ZERO;
     let mut any_fits = false;
+    // Cells that can't be split text-wise (too few baselines or
+    // image/shape-only cells) force the row to leave room for their full
+    // visible height on the first half; otherwise their content (image,
+    // path, etc.) would overflow the cut-edge border.
+    let mut non_splittable_heights: Vec<Pt> = Vec::with_capacity(input.row.cells.len());
 
     for (entry, cell) in input.mr.entries.iter().zip(&input.row.cells) {
         match cut_for_cell(
@@ -79,12 +84,34 @@ pub(super) fn find_row_cut(input: &RowCutInput<'_>) -> Option<SplitCut> {
                     first_half_height = half_h;
                 }
                 cells.push(cut);
+                non_splittable_heights.push(Pt::ZERO);
             }
-            None => cells.push(CellCut::keep_all()),
+            None => {
+                cells.push(CellCut::keep_all());
+                // Cell's natural visible height (content + vertical margins)
+                // must fit on the first half — we can't cut through an
+                // image or shape.
+                let required = entry.layout.content_height + cell.margins.top + cell.margins.bottom;
+                non_splittable_heights.push(required);
+            }
         }
     }
 
     if !any_fits {
+        return None;
+    }
+
+    // Raise first_half_height so every non-splittable cell fits. If that
+    // exceeds `available`, splitting isn't safe — caller should spill the
+    // whole row to the next page.
+    let non_splittable_max = non_splittable_heights
+        .iter()
+        .copied()
+        .fold(Pt::ZERO, Pt::max);
+    if non_splittable_max > first_half_height {
+        first_half_height = non_splittable_max;
+    }
+    if first_half_height > input.available {
         return None;
     }
     Some(SplitCut {
