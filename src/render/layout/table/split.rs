@@ -95,12 +95,12 @@ pub(super) fn find_row_cut(input: &RowCutInput<'_>) -> Option<SplitCut> {
 
 /// For a single cell, choose the largest prefix of lines that fits in
 /// `available`. Returns the `CellCut` and the first-half height this cell
-/// needs (midpoint between the last-fit baseline and the next, plus the
-/// cell's bottom margin — the visual equivalent of half a line gap of
-/// breathing room before the cut-edge border).
+/// needs — symmetric with a non-split cell of the same line count: the
+/// last line's line-box bottom plus `tcMar/bottom` (variant 2 of the
+/// OOXML split-edge options; §17.4.40 re-applied at the cut edge).
 fn cut_for_cell(
     entry: &CellLayoutEntry,
-    _margin_top: Pt,
+    margin_top: Pt,
     margin_bottom: Pt,
     available: Pt,
 ) -> Option<(CellCut, Pt)> {
@@ -125,21 +125,23 @@ fn cut_for_cell(
         return None;
     }
 
-    // Bottom of the first-half box must land below the last-fit line
-    // with room for the cell's bottom margin.
-    let budget = available - margin_bottom;
+    // Space available for the content plus both margins, since the first
+    // half reproduces the cell's natural layout (top margin, lines, bottom
+    // margin) — same as a non-split cell rendering the retained lines.
+    let budget = available - margin_top - margin_bottom;
     if budget <= Pt::ZERO {
         return None;
     }
 
     let first = baselines[0];
-    // Find the largest k such that the midpoint between baselines[k] and
-    // baselines[k+1] fits in `budget`. The midpoint is where the border
-    // will sit (giving half a line-gap of padding above it).
+    // Largest k such that the line-box bottom of line k fits in `budget`.
+    // Line-box bottom of line k ≈ baselines[k+1] - ascent; since
+    // baselines[0] = margin_top + ascent, shifting by baselines[0] - margin_top
+    // gives us content_span = baselines[k+1] - baselines[0] ≈ (k+1) * line_height.
     let mut best_k: Option<usize> = None;
     for k in 0..baselines.len() - 1 {
-        let midpoint = Pt::new((baselines[k].raw() + baselines[k + 1].raw()) * 0.5);
-        if midpoint <= budget {
+        let span = baselines[k + 1] - first;
+        if span <= budget {
             best_k = Some(k);
         } else {
             break;
@@ -147,11 +149,8 @@ fn cut_for_cell(
     }
     let k = best_k?;
 
-    let midpoint = Pt::new((baselines[k].raw() + baselines[k + 1].raw()) * 0.5);
-    // Shift the second half so line k+1 lands at the cell's natural first-
-    // line baseline (`margin_top + ascent` = `baselines[0]`).
     let shift = baselines[k + 1] - first;
-    let half_h = midpoint + margin_bottom;
+    let half_h = shift + margin_top + margin_bottom;
     Some((
         CellCut {
             content_cut_y: baselines[k + 1],
