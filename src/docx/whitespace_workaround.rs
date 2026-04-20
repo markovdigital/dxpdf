@@ -242,10 +242,7 @@ mod tests {
         let out = s(substitute_whitespace_only_runs(xml));
         assert_eq!(
             out,
-            format!(
-                "<w:t xml:space=\"preserve\">{}</w:t>",
-                WS_SENTINEL_TAB
-            )
+            format!("<w:t xml:space=\"preserve\">{}</w:t>", WS_SENTINEL_TAB)
         );
     }
 
