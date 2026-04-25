@@ -85,6 +85,11 @@ pub struct FragmentCtx<'a> {
     >,
     pub paragraph_run_defaults: Option<&'a RunProperties>,
     pub theme: Option<&'a crate::model::Theme>,
+    /// Measurer used by the emoji pipeline for typeface resolution and
+    /// raster-backend metrics. `None` disables the emoji path entirely —
+    /// callers without a font registry (most unit tests) pass `None` and
+    /// emoji codepoints flow through the existing text path unchanged.
+    pub measurer: Option<&'a crate::render::layout::measurer::TextMeasurer<'a>>,
 }
 
 /// Walk inline content and collect fragments.
@@ -225,6 +230,7 @@ where
                         &text_style,
                         hyperlink_url,
                         measure_text,
+                        ctx.measurer,
                         &mut fragments,
                     );
                 } else {
@@ -237,6 +243,7 @@ where
                                     &text_style,
                                     hyperlink_url,
                                     measure_text,
+                                    ctx.measurer,
                                     &mut fragments,
                                 );
                             }
@@ -492,6 +499,7 @@ where
                                     resolved_styles,
                                     paragraph_run_defaults: p.mark_run_properties.as_ref(),
                                     theme,
+                                    measurer: ctx.measurer,
                                 };
                                 let mut sub = collect_fragments(
                                     &p.content,
@@ -540,6 +548,7 @@ mod tests {
             resolved_styles: None,
             paragraph_run_defaults: None,
             theme: None,
+            measurer: None,
         }
     }
 

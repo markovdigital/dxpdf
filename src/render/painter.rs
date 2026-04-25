@@ -9,6 +9,7 @@ use skia_safe::{
 };
 
 use crate::render::dimension::Pt;
+use crate::render::emoji::raster::EmojiRasterizer;
 use crate::render::error::RenderError;
 use crate::render::fonts::{self, FontRegistry};
 use crate::render::layout::draw_command::{
@@ -48,12 +49,22 @@ pub fn render_to_pdf(
     // Avoids re-copying and re-decoding the same image bytes on every page
     // (e.g. a logo repeated in headers/footers).
     let mut image_cache: HashMap<*const [u8], skia_safe::Image> = HashMap::new();
+    // Per-render emoji rasterizer — clusters that recur across pages
+    // (footer 📞 etc.) are rasterized once and shared.
+    let mut emoji_rasterizer = EmojiRasterizer::default();
 
     for page in pages {
         let mut on_page = doc.begin_page(to_size(page.page_size), None);
         {
             let canvas = on_page.canvas();
-            render_page(canvas, page, registry, &mut font_cache, &mut image_cache);
+            render_page(
+                canvas,
+                page,
+                registry,
+                &mut font_cache,
+                &mut image_cache,
+                &mut emoji_rasterizer,
+            );
         }
         doc = on_page.end_page();
     }
@@ -68,6 +79,7 @@ fn render_page(
     registry: &FontRegistry,
     font_cache: &mut fonts::FontCache,
     image_cache: &mut HashMap<*const [u8], skia_safe::Image>,
+    emoji_rasterizer: &mut EmojiRasterizer,
 ) {
     for cmd in &page.commands {
         match cmd {
@@ -159,6 +171,23 @@ fn render_page(
                         );
                     }
                 }
+            }
+            DrawCommand::EmojiCluster {
+                rect,
+                text,
+                typeface,
+                size,
+                presentation,
+                structure,
+            } => {
+                use crate::render::emoji::cluster::EmojiCluster;
+                let cluster = EmojiCluster {
+                    text: text.as_str(),
+                    presentation: *presentation,
+                    structure: *structure,
+                };
+                let img = emoji_rasterizer.rasterize(&cluster, typeface, *size);
+                canvas.draw_image_rect(&img.image, None, to_rect(*rect), &Paint::default());
             }
             DrawCommand::Rect { rect, color } => {
                 let mut paint = Paint::default();

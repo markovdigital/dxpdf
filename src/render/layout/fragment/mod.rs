@@ -6,6 +6,8 @@ use std::rc::Rc;
 use crate::model::RunProperties;
 
 use crate::render::dimension::Pt;
+use crate::render::emoji::cluster::{EmojiPresentation, EmojiStructure};
+use crate::render::fonts::TypefaceEntry;
 use crate::render::geometry::PtSize;
 use crate::render::resolve::color::RgbColor;
 use crate::render::resolve::fonts::effective_font;
@@ -108,6 +110,33 @@ pub enum Fragment {
         rel_id: String,
         image_data: Option<MediaEntry>,
     },
+    /// One emoji grapheme cluster (UAX #29) classified as an emoji sequence
+    /// (UTS #51), to be rasterized at paint time via Skia's raster backend
+    /// and embedded as an inline PDF image. See `docs/emoji-rendering.md`.
+    Emoji {
+        /// Cluster text exactly as classified — one grapheme cluster, possibly
+        /// multi-codepoint (ZWJ, modifier, RIS, tag, keycap sequences).
+        text: String,
+        /// Color emoji typeface resolved upstream by the emoji resolver.
+        /// Frozen at fragment build so paint never re-resolves.
+        typeface: TypefaceEntry,
+        /// Font size at which to rasterize, in Pt.
+        size: Pt,
+        /// UTS #51 §2 presentation. `EmojiPresentation::Text` is preserved
+        /// (the rasterizer can still render it via the same color path) but
+        /// allows future paint-side decisions (e.g. monochrome over color).
+        presentation: EmojiPresentation,
+        /// UTS #51 §2 cluster structure. Carried for diagnostics + future
+        /// painter behaviour (skin-tone modifier substitution, etc.).
+        structure: EmojiStructure,
+        /// Measured advance from Skia raster metrics at `size`.
+        advance: Pt,
+        /// Font metrics from the resolved emoji typeface — used for line
+        /// height contribution.
+        metrics: TextMetrics,
+        /// Inherited from the run (super/subscript / `w:position`).
+        baseline_offset: Pt,
+    },
     Tab {
         line_height: Pt,
         /// Override minimum width for line fitting (default: MIN_TAB_WIDTH).
@@ -133,6 +162,7 @@ impl Fragment {
         match self {
             Fragment::Text { width, .. } => *width,
             Fragment::Image { size, .. } => size.width,
+            Fragment::Emoji { advance, .. } => *advance,
             Fragment::Tab { fitting_width, .. } => fitting_width.unwrap_or(MIN_TAB_WIDTH),
             Fragment::LineBreak { .. }
             | Fragment::ColumnBreak
@@ -153,6 +183,7 @@ impl Fragment {
         match self {
             Fragment::Text { metrics, .. } => metrics.height(),
             Fragment::Image { size, .. } => size.height,
+            Fragment::Emoji { metrics, .. } => metrics.height(),
             Fragment::Tab { line_height, .. }
             | Fragment::LineBreak { line_height }
             | Fragment::PageBreak { line_height } => *line_height,
