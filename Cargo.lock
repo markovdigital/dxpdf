@@ -545,7 +545,7 @@ dependencies = [
 
 [[package]]
 name = "dxpdf"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "bitflags",
  "clap",
