@@ -303,6 +303,16 @@ impl FontRegistry {
         match_exact(&self.font_mgr, family, style).map(system_entry)
     }
 
+    /// Resolve a typeface from the host font system only — bypasses the
+    /// embedded-font index. Used by the color emoji pipeline: Word's font
+    /// subsetter strips color glyph tables (sbix/CBDT/COLR/SVG) when
+    /// embedding emoji fonts, so a docx-embedded "Segoe UI Emoji" carries
+    /// the right family name but no color glyphs and must not satisfy
+    /// emoji resolution.
+    pub fn resolve_system_only(&self, family: &str, style: FontStyle) -> Option<TypefaceEntry> {
+        match_exact(&self.font_mgr, family, style).map(system_entry)
+    }
+
     /// Pre-resolve all four style variants for each family.
     pub fn preload(&self, families: &[String]) {
         let styles = [
@@ -679,5 +689,34 @@ mod tests {
             .resolve_exact("ExactProbe", FontStyle::normal())
             .expect("embedded font must be resolvable via exact match");
         assert!(matches!(entry.origin, TypefaceOrigin::Embedded { .. }));
+    }
+
+    /// Word's font subsetter strips color glyph tables (sbix/CBDT/COLR/SVG)
+    /// when embedding emoji fonts. A docx that embeds e.g. "Segoe UI Emoji"
+    /// therefore registers a typeface with the right family name but only
+    /// monochrome outlines — rasterizing it produces black blobs instead of
+    /// the colored glyph. The emoji pipeline must bypass embedded fonts so
+    /// resolution falls through to the host's real color emoji typeface.
+    #[test]
+    fn resolve_system_only_skips_embedded_fonts() {
+        let bytes = arbitrary_system_font_bytes();
+        let mut r = FontRegistry::new(fmgr());
+        r.register_embedded("SystemOnlyProbe", EmbeddedFontVariant::Regular, bytes)
+            .expect("register_embedded should accept valid font bytes");
+
+        // resolve_exact returns the embedded font:
+        let exact = r
+            .resolve_exact("SystemOnlyProbe", FontStyle::normal())
+            .expect("embedded font must be reachable via resolve_exact");
+        assert!(matches!(exact.origin, TypefaceOrigin::Embedded { .. }));
+
+        // resolve_system_only must NOT return it (no system font has this
+        // synthetic family name):
+        assert!(
+            r.resolve_system_only("SystemOnlyProbe", FontStyle::normal())
+                .is_none(),
+            "resolve_system_only must skip embedded fonts so emoji resolution \
+             can fall through to the host's color emoji typeface"
+        );
     }
 }
