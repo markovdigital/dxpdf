@@ -246,6 +246,54 @@ fn e5_emoji_paragraph_prefix_intact() {
     );
 }
 
+// ─── Underline regression (§17.3.2.40) ────────────────────────────────────────
+
+/// The fixture's styles.xml carries `<w:u w:val="none"/>` in its rPrDefault.
+/// Per OOXML §17.3.2.40 that's the explicit "no underline" override; no
+/// `DrawCommand::Underline` may be emitted for any text fragment in the
+/// document. Direct regression against the bug where every Word-saved doc
+/// got stray underlines under every character because the model's
+/// `Some(UnderlineStyle::None)` was conflated with `Some(_actual_style_)`.
+#[test]
+fn underline_explicit_none_emits_no_underline_commands() {
+    let doc = parse_fixture();
+    let (_, pages) = dxpdf::render::resolve_and_layout(&doc);
+    let underline_count: usize = pages
+        .iter()
+        .flat_map(|p| p.commands.iter())
+        .filter(|c| matches!(c, DrawCommand::Underline { .. }))
+        .count();
+    assert_eq!(
+        underline_count, 0,
+        "fixture's <w:u w:val=\"none\"/> override must produce zero \
+         Underline draw commands"
+    );
+}
+
+/// Same shape, applied to borders: the fixture's pPrDefault has
+/// `<w:pBdr><w:top w:val="nil"/>...</w:pBdr>` and the rPrDefault has
+/// `<w:bdr w:val="nil"/>`. Per OOXML §17.18.2 ST_Border, `nil` (and `none`)
+/// mean "no border" — the painter must emit zero `DrawCommand::Line`
+/// commands for the document. Direct regression against the bug where
+/// every Word-saved doc got hairline boxes around every word and every
+/// paragraph because `Some(Border { style: BorderStyle::None })` was
+/// treated as "draw the border".
+#[test]
+fn explicit_nil_borders_emit_no_line_commands() {
+    let doc = parse_fixture();
+    let (_, pages) = dxpdf::render::resolve_and_layout(&doc);
+    let line_count: usize = pages
+        .iter()
+        .flat_map(|p| p.commands.iter())
+        .filter(|c| matches!(c, DrawCommand::Line { .. }))
+        .count();
+    assert_eq!(
+        line_count, 0,
+        "fixture's <w:bdr/<w:pBdr> nil cascade must produce zero \
+         Line draw commands"
+    );
+}
+
 // Sanity helper kept as a separate test so test-only code paths don't lint
 // as unused when the gated tests skip.
 #[test]

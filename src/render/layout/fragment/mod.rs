@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use crate::model::RunProperties;
+use crate::model::{RunProperties, UnderlineStyle};
 
 use crate::render::dimension::Pt;
 use crate::render::emoji::cluster::{EmojiPresentation, EmojiStructure};
@@ -236,7 +236,12 @@ pub fn font_props_from_run(
         size,
         bold: rp.bold.unwrap_or(false),
         italic: rp.italic.unwrap_or(false),
-        underline: rp.underline.is_some(),
+        // §17.3.2.40: an actual underline style sets the bool. The model's
+        // tri-state — `None` (inherit), `Some(UnderlineStyle::None)`
+        // (explicit "no underline" override), `Some(_actual_style_)` —
+        // collapses here into "draw / don't draw"; only the third case
+        // draws.
+        underline: matches!(rp.underline, Some(s) if s != UnderlineStyle::None),
         char_spacing,
         // Populated by the measurer from Skia font metrics.
         underline_position: Pt::ZERO,
@@ -274,6 +279,7 @@ pub fn to_roman_lower(mut n: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::UnderlineStyle;
 
     #[test]
     fn font_props_default_fallback() {
@@ -283,5 +289,64 @@ mod tests {
         assert_eq!(fp.size.raw(), 12.0);
         assert!(!fp.bold);
         assert!(!fp.italic);
+    }
+
+    // ── §17.3.2.40 underline tri-state ─────────────────────────────────────
+    //
+    // `RunProperties::underline: Option<UnderlineStyle>` carries three states:
+    //   * `None`                            — element absent; inherit (§17.7.2)
+    //   * `Some(UnderlineStyle::None)`      — `<w:u w:val="none"/>` explicit override
+    //   * `Some(UnderlineStyle::Single)` …  — actual underline style
+    // `font_props.underline` is the rendering-decision boolean: it must be
+    // `true` only when an actual underline style is in effect.
+
+    fn rp_with_underline(style: Option<UnderlineStyle>) -> RunProperties {
+        RunProperties {
+            underline: style,
+            ..RunProperties::default()
+        }
+    }
+
+    #[test]
+    fn font_props_underline_absent_is_false() {
+        let fp = font_props_from_run(&rp_with_underline(None), "Helvetica", Pt::new(12.0));
+        assert!(!fp.underline, "no <w:u> element → no underline");
+    }
+
+    #[test]
+    fn font_props_underline_explicit_none_is_false() {
+        let fp = font_props_from_run(
+            &rp_with_underline(Some(UnderlineStyle::None)),
+            "Helvetica",
+            Pt::new(12.0),
+        );
+        assert!(
+            !fp.underline,
+            "<w:u w:val=\"none\"/> is the spec's explicit \"no underline\" \
+             override; font_props.underline must remain false"
+        );
+    }
+
+    #[test]
+    fn font_props_underline_single_is_true() {
+        let fp = font_props_from_run(
+            &rp_with_underline(Some(UnderlineStyle::Single)),
+            "Helvetica",
+            Pt::new(12.0),
+        );
+        assert!(fp.underline, "<w:u w:val=\"single\"/> → underline drawn");
+    }
+
+    #[test]
+    fn font_props_underline_double_is_true() {
+        // Sanity: any non-`None` style sets the bool. A future renderer
+        // change to support distinct styles will replace this bool with
+        // an enum; for now, "any style other than None" → draw.
+        let fp = font_props_from_run(
+            &rp_with_underline(Some(UnderlineStyle::Double)),
+            "Helvetica",
+            Pt::new(12.0),
+        );
+        assert!(fp.underline);
     }
 }

@@ -1,6 +1,8 @@
 use std::rc::Rc;
 
-use crate::model::{Block, FieldCharType, Inline, RunElement, RunProperties, VerticalAlign};
+use crate::model::{
+    Block, BorderStyle, FieldCharType, Inline, RunElement, RunProperties, VerticalAlign,
+};
 use crate::render::dimension::Pt;
 use crate::render::geometry::PtSize;
 use crate::render::resolve::color::RgbColor;
@@ -10,6 +12,33 @@ use super::{
     font_props_from_run, to_roman_lower, FontProps, Fragment, FragmentBorder, TextMetrics,
     SUBSCRIPT_HEIGHT_OFFSET_RATIO, SUPERSCRIPT_ASCENT_OFFSET_RATIO, SUPERSCRIPT_FONT_SIZE_RATIO,
 };
+
+/// §17.3.2.4: convert a run-level [`crate::model::Border`] into a render-side
+/// [`FragmentBorder`], filtering out the spec's "no border" sentinel
+/// ([`BorderStyle::None`]).
+///
+/// `<w:bdr w:val="nil"/>` and `<w:bdr w:val="none"/>` (§17.18.2 ST_Border)
+/// both signal "no border"; the parser collapses them to `BorderStyle::None`
+/// in a `Some(Border { ... })`. The model preserves the explicit `Some` so
+/// it can override an inherited border in the §17.7.2 cascade — but at the
+/// render boundary we drop the variant, otherwise the painter would draw
+/// a hairline box around every word.
+pub(super) fn run_border_to_fragment(
+    border: Option<&crate::model::Border>,
+) -> Option<FragmentBorder> {
+    let b = border?;
+    if b.style == BorderStyle::None {
+        return None;
+    }
+    Some(FragmentBorder {
+        width: Pt::from(b.width),
+        color: crate::render::resolve::color::resolve_color(
+            b.color,
+            crate::render::resolve::color::ColorContext::Text,
+        ),
+        space: Pt::new(b.space.raw() as f32),
+    })
+}
 
 /// §17.16.4.1: context for evaluating dynamic fields (PAGE, NUMPAGES).
 #[derive(Clone, Copy, Default)]
@@ -204,14 +233,7 @@ where
                 }
 
                 // §17.3.2.4: run-level border.
-                let border = effective_props.border.as_ref().map(|b| FragmentBorder {
-                    width: Pt::from(b.width),
-                    color: crate::render::resolve::color::resolve_color(
-                        b.color,
-                        crate::render::resolve::color::ColorContext::Text,
-                    ),
-                    space: Pt::new(b.space.raw() as f32),
-                });
+                let border = run_border_to_fragment(effective_props.border.as_ref());
 
                 // §17.16.19: if a field substitution is pending, use the
                 // substituted text with this TextRun's resolved formatting.
@@ -550,6 +572,49 @@ mod tests {
             theme: None,
             measurer: None,
         }
+    }
+
+    // ── §17.3.2.4 / §17.18.2 run-level border tri-state ─────────────────
+    //
+    // The cascade may carry a child run whose `<w:bdr w:val="nil"/>`
+    // (or "none") explicitly turns off an inherited border. The model
+    // preserves this as `Some(Border { style: BorderStyle::None, .. })`
+    // so the §17.7.2 merge can distinguish "explicit no border" from
+    // "field absent → inherit". At the render boundary we must drop the
+    // sentinel; otherwise the painter draws a hairline box around every
+    // word in any Word-saved doc (Word emits `<w:bdr w:val="nil"/>` in
+    // the default rPrDefault for the entire document).
+
+    fn border_with_style(style: BorderStyle) -> crate::model::Border {
+        crate::model::Border {
+            style,
+            width: Dimension::new(0),
+            space: Dimension::new(0),
+            color: crate::model::Color::Auto,
+        }
+    }
+
+    #[test]
+    fn run_border_absent_yields_no_fragment_border() {
+        assert!(run_border_to_fragment(None).is_none());
+    }
+
+    #[test]
+    fn run_border_explicit_none_yields_no_fragment_border() {
+        let b = border_with_style(BorderStyle::None);
+        assert!(
+            run_border_to_fragment(Some(&b)).is_none(),
+            "<w:bdr w:val=\"nil\"/> / \"none\" must NOT produce a render-side border"
+        );
+    }
+
+    #[test]
+    fn run_border_actual_style_yields_fragment_border() {
+        let b = border_with_style(BorderStyle::Single);
+        assert!(
+            run_border_to_fragment(Some(&b)).is_some(),
+            "explicit Single border must reach the painter"
+        );
     }
 
     fn text_run(text: &str) -> Inline {
