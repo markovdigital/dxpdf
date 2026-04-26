@@ -11,12 +11,14 @@
 //! identical inputs yield a single rasterization shared across the document.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
-use skia_safe::{surfaces, Color, Font, Image, Paint, PaintStyle};
+use skia_safe::{surfaces, Color, Font, Image, Paint, PaintStyle, Point};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::render::dimension::Pt;
 use crate::render::emoji::cluster::EmojiCluster;
+use crate::render::emoji::shape::shape_text;
 use crate::render::fonts::{TypefaceEntry, TypefaceId};
 use crate::render::geometry::PtSize;
 
@@ -103,9 +105,15 @@ pub struct EmojiImage {
 // ─── Rasterizer ──────────────────────────────────────────────────────────────
 
 /// Per-render rasterizer that owns the cache. Lifetime equals the painter's.
+///
+/// Maintains two caches:
+/// 1. `cache` — the rasterized image keyed by [`EmojiKey`].
+/// 2. `font_bytes` — typeface bytes by id, so a 190 MB Apple Color Emoji
+///    typeface isn't re-extracted via `to_font_data` for every cluster.
 pub struct EmojiRasterizer {
     config: RasterConfig,
     cache: HashMap<EmojiKey, EmojiImage>,
+    font_bytes: HashMap<TypefaceId, Rc<Vec<u8>>>,
 }
 
 impl Default for EmojiRasterizer {
@@ -119,6 +127,7 @@ impl EmojiRasterizer {
         Self {
             config,
             cache: HashMap::new(),
+            font_bytes: HashMap::new(),
         }
     }
 
@@ -133,6 +142,11 @@ impl EmojiRasterizer {
     /// Rasterize `cluster` at `size` using `typeface`, or return the cached
     /// image if previously seen.
     ///
+    /// Internally shapes via `rustybuzz` (GSUB-aware) so multi-codepoint
+    /// emoji sequences (keycap, modifier, ZWJ, RIS) render as their
+    /// ligated single glyph — `canvas.draw_str` would have rendered each
+    /// codepoint separately. See `shape.rs` for the shaper.
+    ///
     /// `typeface` is guaranteed by the type system to be a real
     /// [`TypefaceEntry`] — callers that hold an [`EmojiTypeface::Unavailable`]
     /// cannot reach this method. (See plan test X8.)
@@ -146,9 +160,33 @@ impl EmojiRasterizer {
     ) -> &EmojiImage {
         let scale = self.config.super_sample;
         let key = EmojiKey::new(cluster.text, typeface, size, scale);
-        self.cache
-            .entry(key)
-            .or_insert_with(|| rasterize_uncached(cluster.text, typeface, size, scale))
+        if !self.cache.contains_key(&key) {
+            let bytes = self.font_bytes_for(typeface);
+            let image = rasterize_uncached(
+                cluster.text,
+                typeface,
+                size,
+                scale,
+                bytes.as_deref().map(|v| v.as_slice()),
+            );
+            self.cache.insert(key.clone(), image);
+        }
+        self.cache.get(&key).expect("just inserted")
+    }
+
+    /// Per-render typeface byte cache. Apple Color Emoji is ~190 MB on
+    /// macOS, so we extract once per typeface and reuse for every
+    /// rasterization. Returns `None` (not `Err`) if the typeface refuses
+    /// to expose bytes — the rasterizer falls back to the cmap-only
+    /// `draw_str` path.
+    fn font_bytes_for(&mut self, typeface: &TypefaceEntry) -> Option<Rc<Vec<u8>>> {
+        let id = TypefaceId::from(&typeface.typeface);
+        if let Some(bytes) = self.font_bytes.get(&id) {
+            return Some(bytes.clone());
+        }
+        let bytes = typeface.typeface.to_font_data().map(|(b, _)| Rc::new(b))?;
+        self.font_bytes.insert(id, bytes.clone());
+        Some(bytes)
     }
 }
 
@@ -157,29 +195,40 @@ fn rasterize_uncached(
     typeface: &TypefaceEntry,
     size: Pt,
     scale: SuperSample,
+    font_bytes: Option<&[u8]>,
 ) -> EmojiImage {
     let factor = scale.factor();
     let scaled_size = f32::from(size) * factor;
     let font = Font::from_typeface(typeface.typeface.clone(), scaled_size);
 
-    let (_advance, bounds) = font.measure_str(text, None);
+    // Try the GSUB-aware shaping path. On any shaping failure (font bytes
+    // unavailable, parse error, glyph id out of range), fall through to
+    // the legacy `draw_str` path so the rasterizer still produces output.
+    let shaped = font_bytes.and_then(|b| shape_text(b, text, scaled_size).ok());
 
-    // Pixel dimensions from the bounds rect. Guarantee at least 1×1 — Skia
-    // refuses to allocate a zero-area surface, and a degenerate cluster
-    // (zero-width whitespace masquerading as a cluster) shouldn't crash the
-    // pipeline. The painter draws this 1×1 transparent pixel as a no-op.
-    let width_px = bounds.width().ceil().max(1.0) as i32;
-    let height_px = bounds.height().ceil().max(1.0) as i32;
+    let (_, font_metrics) = font.metrics();
+    let ascent_px = -font_metrics.ascent;
+    let descent_px = font_metrics.descent;
+
+    // Compute width: from shaped advance if shaping succeeded, otherwise
+    // fall back to `font.measure_str` (cmap-level approximation).
+    let (width_px, height_px, x_origin, y_baseline) = match &shaped {
+        Some(run) => {
+            let w = run.total_advance.raw().ceil().max(1.0) as i32;
+            let h = (ascent_px + descent_px).ceil().max(1.0) as i32;
+            (w, h, 0.0, ascent_px)
+        }
+        None => {
+            let (_, bounds) = font.measure_str(text, None);
+            let w = bounds.width().ceil().max(1.0) as i32;
+            let h = bounds.height().ceil().max(1.0) as i32;
+            (w, h, -bounds.left(), -bounds.top())
+        }
+    };
 
     let mut surface = surfaces::raster_n32_premul((width_px, height_px))
         .expect("raster_n32_premul returned None for non-degenerate dimensions");
     let canvas = surface.canvas();
-
-    // Translate so the cluster's left side bearing sits at x=0 and its top
-    // at y=0. After translation, `draw_str` at (0, 0) lands the baseline
-    // origin where the bounds rect's origin used to be, painting the glyphs
-    // into the upper-left of the surface.
-    canvas.translate((-bounds.left(), -bounds.top()));
 
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
@@ -189,7 +238,32 @@ fn rasterize_uncached(
     // Black is the safest default for monochrome fallbacks.
     paint.set_color(Color::BLACK);
 
-    canvas.draw_str(text, (0.0, 0.0), &font, &paint);
+    match shaped {
+        Some(run) => {
+            // Walk shaped glyphs, accumulating positions. The baseline sits
+            // at y=ascent_px; each glyph carries its own (x_offset,
+            // y_offset) in HarfBuzz convention (y positive = up); Skia's
+            // y-axis is flipped, so we negate the y offset.
+            let mut ids = Vec::with_capacity(run.glyphs.len());
+            let mut positions = Vec::with_capacity(run.glyphs.len());
+            let mut pen_x = 0.0f32;
+            for g in &run.glyphs {
+                ids.push(g.id);
+                positions.push(Point::new(
+                    pen_x + g.x_offset.raw(),
+                    y_baseline - g.y_offset.raw(),
+                ));
+                pen_x += g.advance.raw();
+            }
+            canvas.draw_glyphs_at(&ids, &*positions, (0.0, 0.0), &font, &paint);
+        }
+        None => {
+            // Legacy path: cmap-level draw_str. Used for fonts whose bytes
+            // we can't extract or rustybuzz can't parse.
+            canvas.translate((x_origin, y_baseline));
+            canvas.draw_str(text, (0.0, 0.0), &font, &paint);
+        }
+    }
 
     let image = surface.image_snapshot();
 
@@ -200,7 +274,7 @@ fn rasterize_uncached(
             Pt::new(width_px as f32 / factor),
             Pt::new(height_px as f32 / factor),
         ),
-        baseline_offset: Pt::new(-bounds.top() / factor),
+        baseline_offset: Pt::new(y_baseline / factor),
     }
 }
 
@@ -290,13 +364,21 @@ mod tests {
         assert!(img.draw_size.height.raw() > 0.0);
     }
 
-    /// X4b — degenerate empty input must not crash and must yield 1×1.
+    /// X4b — degenerate empty input must not crash and must yield a
+    /// non-zero raster surface. Width is clamped to 1 (no advance),
+    /// height comes from the typeface's ascent+descent so the baseline
+    /// is preserved if the painter ever places this image.
     #[test]
-    fn x4b_zero_width_input_yields_unit_surface() {
+    fn x4b_zero_width_input_yields_non_degenerate_surface() {
         let mut r = EmojiRasterizer::default();
         let tf = any_typeface();
         let img = r.rasterize(&single_emoji(""), &tf, Pt::new(12.0)).clone();
-        assert_eq!(img.pixels, (1, 1));
+        assert_eq!(img.pixels.0, 1, "zero-advance input clamps to 1px width");
+        assert!(
+            img.pixels.1 >= 1,
+            "height must remain non-degenerate, got {}",
+            img.pixels.1
+        );
     }
 
     /// X5 — rasterization of a renderable glyph produces non-trivial pixel

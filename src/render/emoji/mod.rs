@@ -10,3 +10,4 @@
 pub mod cluster;
 pub mod raster;
 pub mod resolve;
+pub mod shape;
