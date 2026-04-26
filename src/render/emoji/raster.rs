@@ -248,13 +248,18 @@ fn rasterize_uncached(
     let width_px = (target.width.raw() * factor).ceil().max(1.0) as i32;
     let height_px = (target.height.raw() * factor).ceil().max(1.0) as i32;
 
-    // Baseline within the surface: the rasterizer's font.metrics() gives
-    // ascent at the scaled size. We position the baseline such that the
-    // glyph's top sits within the image; precise alignment with the line's
-    // baseline happens at paint time (the rect's vertical placement, not
-    // here).
-    let (_, font_metrics) = font.metrics();
-    let ascent_px_scaled = -font_metrics.ascent;
+    // Baseline within the surface: the layout reserves space using the
+    // *original*-size ascent (via `TextMeasurer::measure_with_typeface`,
+    // which calls `font.metrics()` at the run's font size). The painter
+    // then places the rect with `top_y = baseline_y - metrics.ascent`.
+    // We must therefore position the glyph baseline within the image at
+    // `original_ascent × factor`, NOT the scaled-size font's own ascent —
+    // for fonts with non-linear metrics (Apple Color Emoji's ascent+descent
+    // ratio is 1.64 at 11pt but 1.37 at 22pt), the two differ and the
+    // emoji ends up floating above or below the line's baseline.
+    let original_font = Font::from_typeface(typeface.typeface.clone(), f32::from(size));
+    let (_, original_metrics) = original_font.metrics();
+    let baseline_y_px = -original_metrics.ascent * factor;
 
     // Try the GSUB-aware shaping path. On any shaping failure (font bytes
     // unavailable, parse error, glyph id out of range), fall through to
@@ -277,8 +282,9 @@ fn rasterize_uncached(
     match shaped {
         Some(run) => {
             // Walk shaped glyphs, accumulating positions. Baseline at
-            // ascent_px_scaled from the top; each glyph's HarfBuzz
-            // y-offset is positive-up, so we negate for Skia's y-down.
+            // `baseline_y_px` (= layout's ascent at original size, scaled
+            // by `factor`) from the top; each glyph's HarfBuzz y-offset
+            // is positive-up, so we negate for Skia's y-down.
             let mut ids = Vec::with_capacity(run.glyphs.len());
             let mut positions = Vec::with_capacity(run.glyphs.len());
             let mut pen_x = 0.0f32;
@@ -286,7 +292,7 @@ fn rasterize_uncached(
                 ids.push(g.id);
                 positions.push(Point::new(
                     pen_x + g.x_offset.raw(),
-                    ascent_px_scaled - g.y_offset.raw(),
+                    baseline_y_px - g.y_offset.raw(),
                 ));
                 pen_x += g.advance.raw();
             }
@@ -310,7 +316,7 @@ fn rasterize_uncached(
         image,
         pixels: (width_px, height_px),
         draw_size: target,
-        baseline_offset: Pt::new(ascent_px_scaled / factor),
+        baseline_offset: Pt::new(baseline_y_px / factor),
     }
 }
 
