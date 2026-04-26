@@ -4,7 +4,7 @@
 //! id travels separately for cascade reasons, matching the legacy parser's
 //! signature.
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::docx::model::dimension::Twips;
 use crate::docx::model::geometry::EdgeInsets;
@@ -63,11 +63,14 @@ pub(crate) struct TblLayoutXml {
     ty: StTblLayoutType,
 }
 
-/// `<w:tblLook>` — modern per-attribute form only. Legacy hex bitfield on
-/// `@val` is not supported here; documents using it simply yield all `None`,
-/// which matches the spec's "no conditional formatting" meaning.
+/// `<w:tblLook>` — supports both the modern explicit attributes (firstRow,
+/// lastRow, ...) and the legacy hex bitfield on `@val`. Per
+/// [MS-OI29500] §2.1.1583, when both are present the explicit attribute
+/// wins per-flag; otherwise the bitfield supplies the value.
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub(crate) struct TblLookXml {
+    #[serde(rename = "@val", default)]
+    val: Option<TblLookHex>,
     #[serde(rename = "@firstRow", default)]
     first_row: Option<AttrBool>,
     #[serde(rename = "@lastRow", default)]
@@ -80,6 +83,60 @@ pub(crate) struct TblLookXml {
     no_h_band: Option<AttrBool>,
     #[serde(rename = "@noVBand", default)]
     no_v_band: Option<AttrBool>,
+}
+
+/// Word's legacy `<w:tblLook val>` hex bitfield, per [MS-OI29500] §2.1.1583.
+///
+/// Bit positions:
+/// | Mask     | Flag        |
+/// |----------|-------------|
+/// | `0x0020` | firstRow    |
+/// | `0x0040` | lastRow     |
+/// | `0x0080` | firstColumn |
+/// | `0x0100` | lastColumn  |
+/// | `0x0200` | noHBand     |
+/// | `0x0400` | noVBand     |
+///
+/// Other bits are reserved/ignored. The Word default `04A0` =
+/// firstRow + firstColumn + noVBand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TblLookHex(u16);
+
+impl TblLookHex {
+    const FIRST_ROW: u16 = 0x0020;
+    const LAST_ROW: u16 = 0x0040;
+    const FIRST_COLUMN: u16 = 0x0080;
+    const LAST_COLUMN: u16 = 0x0100;
+    const NO_H_BAND: u16 = 0x0200;
+    const NO_V_BAND: u16 = 0x0400;
+
+    fn first_row(self) -> bool {
+        self.0 & Self::FIRST_ROW != 0
+    }
+    fn last_row(self) -> bool {
+        self.0 & Self::LAST_ROW != 0
+    }
+    fn first_column(self) -> bool {
+        self.0 & Self::FIRST_COLUMN != 0
+    }
+    fn last_column(self) -> bool {
+        self.0 & Self::LAST_COLUMN != 0
+    }
+    fn no_h_band(self) -> bool {
+        self.0 & Self::NO_H_BAND != 0
+    }
+    fn no_v_band(self) -> bool {
+        self.0 & Self::NO_V_BAND != 0
+    }
+}
+
+impl<'de> Deserialize<'de> for TblLookHex {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        u16::from_str_radix(s.trim_start_matches("0x"), 16)
+            .map(TblLookHex)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 /// `<w:tblpPr>` — floating table positioning.
@@ -135,13 +192,34 @@ impl TblPrXml {
 
 impl From<TblLookXml> for TableLook {
     fn from(x: TblLookXml) -> Self {
+        // Per [MS-OI29500] §2.1.1583: explicit attribute wins per-flag,
+        // legacy `val` supplies the fallback bit when the attribute is absent.
+        let from_val = |bit: fn(TblLookHex) -> bool| x.val.map(bit);
         Self {
-            first_row: x.first_row.map(|b| b.0),
-            last_row: x.last_row.map(|b| b.0),
-            first_column: x.first_column.map(|b| b.0),
-            last_column: x.last_column.map(|b| b.0),
-            no_h_band: x.no_h_band.map(|b| b.0),
-            no_v_band: x.no_v_band.map(|b| b.0),
+            first_row: x
+                .first_row
+                .map(|b| b.0)
+                .or_else(|| from_val(TblLookHex::first_row)),
+            last_row: x
+                .last_row
+                .map(|b| b.0)
+                .or_else(|| from_val(TblLookHex::last_row)),
+            first_column: x
+                .first_column
+                .map(|b| b.0)
+                .or_else(|| from_val(TblLookHex::first_column)),
+            last_column: x
+                .last_column
+                .map(|b| b.0)
+                .or_else(|| from_val(TblLookHex::last_column)),
+            no_h_band: x
+                .no_h_band
+                .map(|b| b.0)
+                .or_else(|| from_val(TblLookHex::no_h_band)),
+            no_v_band: x
+                .no_v_band
+                .map(|b| b.0)
+                .or_else(|| from_val(TblLookHex::no_v_band)),
         }
     }
 }
@@ -364,6 +442,69 @@ mod tests {
         assert_eq!(l.first_row, Some(true));
         assert_eq!(l.last_row, Some(false));
         assert_eq!(l.no_h_band, Some(true));
+    }
+
+    /// [MS-OI29500] §2.1.1583: legacy `@val` hex bitfield must decode to the
+    /// same flags as the modern explicit attributes. Bit positions:
+    /// 0x0020 firstRow, 0x0040 lastRow, 0x0080 firstColumn, 0x0100 lastColumn,
+    /// 0x0200 noHBand, 0x0400 noVBand. The Word-default `04A0` =
+    /// firstRow + firstColumn + noVBand.
+    #[test]
+    fn tbl_pr_tbl_look_legacy_val_default() {
+        let (tp, _) = parse_tbl_pr(r#"<tblPr><tblLook val="04A0"/></tblPr>"#);
+        let l = tp.look.unwrap();
+        assert_eq!(l.first_row, Some(true));
+        assert_eq!(l.last_row, Some(false));
+        assert_eq!(l.first_column, Some(true));
+        assert_eq!(l.last_column, Some(false));
+        assert_eq!(l.no_h_band, Some(false));
+        assert_eq!(l.no_v_band, Some(true));
+    }
+
+    /// Sample1's ITEM/NEEDED table uses `val="0620"` =
+    /// firstRow + noHBand + noVBand. Without legacy decoding, banding is
+    /// erroneously enabled and `band1Horz` CF paints inner borders.
+    #[test]
+    fn tbl_pr_tbl_look_legacy_val_suppresses_banding() {
+        let (tp, _) = parse_tbl_pr(r#"<tblPr><tblLook val="0620"/></tblPr>"#);
+        let l = tp.look.unwrap();
+        assert_eq!(l.first_row, Some(true));
+        assert_eq!(l.no_h_band, Some(true));
+        assert_eq!(l.no_v_band, Some(true));
+    }
+
+    #[test]
+    fn tbl_pr_tbl_look_legacy_val_zero_clears_all() {
+        let (tp, _) = parse_tbl_pr(r#"<tblPr><tblLook val="0000"/></tblPr>"#);
+        let l = tp.look.unwrap();
+        assert_eq!(l.first_row, Some(false));
+        assert_eq!(l.last_row, Some(false));
+        assert_eq!(l.first_column, Some(false));
+        assert_eq!(l.last_column, Some(false));
+        assert_eq!(l.no_h_band, Some(false));
+        assert_eq!(l.no_v_band, Some(false));
+    }
+
+    /// Per [MS-OI29500]: when both legacy `val` and explicit attributes are
+    /// specified, the explicit attribute wins per-flag. Sample3 has tables
+    /// shaped like `<tblLook val="04A0" firstRow="1" noHBand="0" .../>`.
+    #[test]
+    fn tbl_pr_tbl_look_explicit_attrs_override_val() {
+        let (tp, _) =
+            parse_tbl_pr(r#"<tblPr><tblLook val="0000" firstRow="1" noVBand="1"/></tblPr>"#);
+        let l = tp.look.unwrap();
+        assert_eq!(l.first_row, Some(true), "explicit firstRow=1 wins");
+        assert_eq!(l.last_row, Some(false), "from val=0000");
+        assert_eq!(l.first_column, Some(false), "from val=0000");
+        assert_eq!(l.no_v_band, Some(true), "explicit noVBand=1 wins");
+    }
+
+    #[test]
+    fn tbl_pr_tbl_look_legacy_val_lowercase() {
+        let (tp, _) = parse_tbl_pr(r#"<tblPr><tblLook val="04a0"/></tblPr>"#);
+        let l = tp.look.unwrap();
+        assert_eq!(l.first_row, Some(true));
+        assert_eq!(l.no_v_band, Some(true));
     }
 
     #[test]
