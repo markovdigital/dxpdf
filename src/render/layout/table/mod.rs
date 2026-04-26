@@ -152,26 +152,24 @@ pub fn layout_table_paginated(
     let mut slices: Vec<Vec<SliceItem>> = Vec::new();
     let mut current_slice: Vec<SliceItem> = Vec::new();
     let mut remaining = available_height;
-    let is_first_slice = |slices: &Vec<Vec<_>>| slices.is_empty();
 
     for group in &groups {
-        // Header rows on the first slice are emitted as normal rows.
-        if is_first_slice(&slices) && group.start < header_count {
-            current_slice.push(SliceItem::Range(group.start..group.end));
-            remaining -= group.height;
-            continue;
-        }
-
         if group.height <= remaining {
             current_slice.push(SliceItem::Range(group.start..group.end));
             remaining -= group.height;
             continue;
         }
 
+        // §17.4.49: header rows are atomic with respect to splitting — they
+        // must remain intact so the same row content can repeat verbatim on
+        // continuation slices. Non-header rows fall through to the normal
+        // §17.4.1 split path.
+        let is_header = group.start < header_count;
+
         // Doesn't fit. Try to split (§17.4.1) before spilling the whole
-        // group to the next page. Only single-row groups are splittable —
-        // vMerge spans and cantSplit rows set `splittable=false`.
-        if group.splittable && group.end - group.start == 1 {
+        // group to the next page. Only non-header single-row groups are
+        // splittable — vMerge spans and cantSplit rows set `splittable=false`.
+        if !is_header && group.splittable && group.end - group.start == 1 {
             let row_idx = group.start;
             let cut_input = RowCutInput {
                 mr: &measured.rows[row_idx],
@@ -250,7 +248,11 @@ pub fn layout_table_paginated(
         // No split possible — move the whole group to the next page.
         slices.push(std::mem::take(&mut current_slice));
         remaining = page_height;
-        if header_count > 0 {
+        // §17.4.49: prepend the repeating header rows only when this group
+        // sits past the headers. When advancing because a header row itself
+        // doesn't fit, the row is part of the table's first appearance —
+        // emitting `Range(0..header_count)` here would duplicate it.
+        if !is_header && header_count > 0 {
             current_slice.push(SliceItem::Range(0..header_count));
             remaining -= header_height;
         }
@@ -1093,5 +1095,151 @@ mod tests {
             .filter(|c| matches!(c, DrawCommand::Text { .. }))
             .count();
         assert_eq!(count0, 0, "vMerge span must not split across pages");
+    }
+
+    /// Regression: a table whose every row has `tblHeader=1` (a Word template
+    /// pattern, e.g. the trailing "Anhang" tables in the Volvo Annahme-Protokoll)
+    /// must still respect `available_height`. The previous implementation
+    /// unconditionally added every header row to the first slice, overflowing
+    /// the page when the table arrived near the bottom of a stacked page.
+    #[test]
+    fn all_header_rows_paginate_when_exceeding_available() {
+        let mut r0 = tall_row(2);
+        r0.is_header = Some(true);
+        r0.cant_split = Some(true);
+        let mut r1 = tall_row(2);
+        r1.is_header = Some(true);
+        r1.cant_split = Some(true);
+        let mut r2 = tall_row(2);
+        r2.is_header = Some(true);
+        r2.cant_split = Some(true);
+
+        let rows = vec![r0, r1, r2];
+        let col_widths = vec![Pt::new(40.0)];
+
+        // Available 30pt fits at most one row; the remaining rows must spill.
+        let slices = layout_table_paginated(
+            &rows,
+            &col_widths,
+            &body_constraints(),
+            Pt::new(14.0),
+            None,
+            None,
+            &TablePaginationConfig {
+                available_height: Pt::new(30.0),
+                page_height: Pt::new(200.0),
+                suppress_first_row_top: false,
+            },
+        );
+
+        assert!(
+            slices.len() >= 2,
+            "expected ≥2 slices, got {}",
+            slices.len()
+        );
+        assert!(
+            slices[0].size.height <= Pt::new(30.0),
+            "slice 0 height {:.1}pt exceeds available 30pt — header rows \
+             ignoring the fitting check",
+            slices[0].size.height.raw()
+        );
+
+        // Each header row appears exactly once — no double-emission, since
+        // an all-header table has no "subsequent" rows to head.
+        let total_text: usize = slices
+            .iter()
+            .map(|s| {
+                s.commands
+                    .iter()
+                    .filter(|c| matches!(c, DrawCommand::Text { .. }))
+                    .count()
+            })
+            .sum();
+        assert_eq!(total_text, 6, "all rows emitted exactly once");
+    }
+
+    /// Regression: when `available_height` is zero (cursor at the page
+    /// bottom), an all-header table must produce an empty first slice and
+    /// emit content on a fresh continuation page.
+    #[test]
+    fn all_header_rows_with_no_space_advances_page() {
+        let mut r0 = tall_row(2);
+        r0.is_header = Some(true);
+        r0.cant_split = Some(true);
+
+        let rows = vec![r0];
+        let col_widths = vec![Pt::new(40.0)];
+
+        let slices = layout_table_paginated(
+            &rows,
+            &col_widths,
+            &body_constraints(),
+            Pt::new(14.0),
+            None,
+            None,
+            &TablePaginationConfig {
+                available_height: Pt::ZERO,
+                page_height: Pt::new(200.0),
+                suppress_first_row_top: false,
+            },
+        );
+
+        assert_eq!(slices.len(), 2, "empty first slice + content slice");
+        let count0 = slices[0]
+            .commands
+            .iter()
+            .filter(|c| matches!(c, DrawCommand::Text { .. }))
+            .count();
+        let count1 = slices[1]
+            .commands
+            .iter()
+            .filter(|c| matches!(c, DrawCommand::Text { .. }))
+            .count();
+        assert_eq!(count0, 0, "first slice empty when no space available");
+        assert_eq!(count1, 2, "all content moves to continuation");
+    }
+
+    /// Regression: when a non-header row triggers a page break, header rows
+    /// must still be re-emitted at the top of the continuation slice.
+    #[test]
+    fn header_repeats_on_continuation_when_body_overflows() {
+        let mut header = tall_row(1); // 14pt
+        header.is_header = Some(true);
+        header.cant_split = Some(true);
+        let body0 = tall_row(2); // 28pt
+        let mut body1 = tall_row(2); // 28pt
+        body1.cant_split = Some(true);
+
+        let rows = vec![header, body0, body1];
+        let col_widths = vec![Pt::new(40.0)];
+
+        // Available 50pt: header (14) + body0 (28) = 42 fits; body1 (28) spills.
+        let slices = layout_table_paginated(
+            &rows,
+            &col_widths,
+            &body_constraints(),
+            Pt::new(14.0),
+            None,
+            None,
+            &TablePaginationConfig {
+                available_height: Pt::new(50.0),
+                page_height: Pt::new(200.0),
+                suppress_first_row_top: false,
+            },
+        );
+
+        assert_eq!(slices.len(), 2);
+        let count0 = slices[0]
+            .commands
+            .iter()
+            .filter(|c| matches!(c, DrawCommand::Text { .. }))
+            .count();
+        let count1 = slices[1]
+            .commands
+            .iter()
+            .filter(|c| matches!(c, DrawCommand::Text { .. }))
+            .count();
+        assert_eq!(count0, 3, "slice 0: header (1) + body0 (2)");
+        assert_eq!(count1, 3, "slice 1: header repeated (1) + body1 (2)");
     }
 }

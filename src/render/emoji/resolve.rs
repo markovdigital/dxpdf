@@ -133,8 +133,13 @@ pub struct RegistryLookup<'a> {
 
 impl EmojiTypefaceLookup for RegistryLookup<'_> {
     fn lookup(&self, family: EmojiFamily) -> Option<TypefaceEntry> {
+        // Bypass embedded fonts: Word's subsetter strips color glyph tables
+        // (sbix/CBDT/COLR/SVG) when embedding an emoji font, so a docx-
+        // embedded "Segoe UI Emoji" rasterizes as black blobs even though
+        // it carries the right family name. Only the host's typeface can
+        // be relied on to carry color glyphs.
         self.registry
-            .resolve_exact(family.family_name(), FontStyle::normal())
+            .resolve_system_only(family.family_name(), FontStyle::normal())
     }
 }
 

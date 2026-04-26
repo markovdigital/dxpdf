@@ -100,13 +100,22 @@ pub(super) fn build_table(
     let cell_margins_h = default_cell_margins
         .map(|m| Pt::from(m.left) + Pt::from(m.right))
         .unwrap_or(Pt::ZERO);
+    // §17.4.63 / Word heuristic: a full-width left-aligned table extends
+    // beyond the body content area by its cell margins so cell content
+    // aligns with surrounding paragraph text. Centered/right-aligned tables
+    // are positioned as a unit — extending them would just shift them out
+    // by half the margins, producing a width discrepancy when consecutive
+    // centered tables have different cell margins (cf. the stacked
+    // "Anhang: Sauberkeit" tables in the Volvo Annahme-Protokoll).
+    let extends_for_alignment = !matches!(
+        t.properties.alignment,
+        Some(model::Alignment::Center) | Some(model::Alignment::End)
+    );
     let target_width = match t.properties.width {
         Some(model::TableMeasure::Pct(pct)) => {
-            // §17.4.63: percentage in fiftieths of a percent.
-            // 5000 = 100%. Full-width tables extend by cell margins so
-            // cell content aligns with paragraph text at the margins.
+            // §17.4.63: percentage in fiftieths of a percent. 5000 = 100%.
             let ratio = pct.raw() as f32 / 5000.0;
-            let base = if pct.raw() >= 5000 {
+            let base = if pct.raw() >= 5000 && extends_for_alignment {
                 available_width + cell_margins_h
             } else {
                 available_width
@@ -116,10 +125,12 @@ pub(super) fn build_table(
         Some(model::TableMeasure::Twips(tw)) => Pt::from(tw),
         _ => available_width, // auto/nil: use grid cols or available width
     };
-    // §17.4.53: fixed layout uses exact grid column widths — no scaling.
-    // Auto layout scales columns to fit the target width.
-    let is_fixed = t.properties.layout == Some(model::TableLayout::Fixed);
-    let col_widths = if (is_auto_width || is_fixed) && !grid_cols.is_empty() {
+    // §17.4.53: tblLayout controls whether columns may auto-resize to fit
+    // content; it does not override the preferred table width from tblW.
+    // Word scales grid column widths proportionally to match tblW in both
+    // fixed and auto layouts. Only when tblW is auto/nil do we keep the raw
+    // grid widths (no preferred width was specified).
+    let col_widths = if is_auto_width && !grid_cols.is_empty() {
         grid_cols.clone()
     } else {
         compute_column_widths(&grid_cols, num_cols, target_width)
