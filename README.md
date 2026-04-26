@@ -332,6 +332,11 @@ On Apple M3 Max, dxpdf converts a typical multi-page business document in under 
 
 dxpdf runs on macOS, Linux, and Windows. On Linux, you need `libfontconfig1-dev` and `libfreetype-dev` installed.
 
+## Used By
+
+- <img src="https://www.google.com/s2/favicons?domain=nerdy.pro&sz=32" width="16" height="16" alt=""> [nerdy.pro](https://nerdy.pro)
+- <img src="https://www.google.com/s2/favicons?domain=formtastic.de&sz=32" width="16" height="16" alt=""> [formtastic.de](https://formtastic.de)
+
 ## Contributing
 
 Contributions are welcome. Please open an issue before submitting large PRs.
