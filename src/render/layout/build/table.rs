@@ -177,8 +177,7 @@ pub(super) fn build_table(
                         grid_start += row.cells[ci].properties.grid_span.unwrap_or(1) as usize;
                     }
                     let grid_end = (grid_start + span).min(col_widths.len());
-                    let cell_width: Pt =
-                        col_widths[grid_start..grid_end].iter().copied().sum();
+                    let cell_width: Pt = col_widths[grid_start..grid_end].iter().copied().sum();
                     let cell_margins_h = cell
                         .properties
                         .margins

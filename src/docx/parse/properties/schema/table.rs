@@ -564,8 +564,7 @@ mod tests {
 
     #[test]
     fn tr_pr_grid_before_and_w_before() {
-        let tr =
-            parse_tr_pr(r#"<trPr><gridBefore val="1"/><wBefore w="38" type="dxa"/></trPr>"#);
+        let tr = parse_tr_pr(r#"<trPr><gridBefore val="1"/><wBefore w="38" type="dxa"/></trPr>"#);
         assert_eq!(tr.grid_before, 1);
         match tr.w_before.unwrap() {
             TableMeasure::Twips(d) => assert_eq!(d.raw(), 38),

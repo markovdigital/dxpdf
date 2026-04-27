@@ -827,7 +827,10 @@ mod tests {
             }
             _ => false,
         });
-        assert!(has_inside_v, "1pt inside_v border between cells must appear");
+        assert!(
+            has_inside_v,
+            "1pt inside_v border between cells must appear"
+        );
     }
 
     #[test]
@@ -922,7 +925,8 @@ mod tests {
         // the vMerge happening at col 1.
         assert!(col0_y > 0.0, "row1col0 is on the second row");
         assert_eq!(
-            col0_y, header_y + 14.0,
+            col0_y,
+            header_y + 14.0,
             "row1col0 sits exactly one row-height below the row 0 header"
         );
     }
