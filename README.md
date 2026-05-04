@@ -36,7 +36,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-dxpdf = "0.2.15"
+dxpdf = "0.2.16"
 ```
 
 ### Python Package
@@ -191,6 +191,7 @@ Validated against ISO 29500 (Office Open XML). **37 features fully implemented, 
 | Font size, family, color | ✅ |
 | Superscript/subscript | ✅ |
 | Character spacing | ✅ |
+| Character scaling (`w:w` horizontal compression/expansion) | ✅ |
 | Run shading | ✅ |
 | Strikethrough | ⚠️ parsed, not yet rendered |
 | Highlighting | ✅ full ST_HighlightColor palette |
