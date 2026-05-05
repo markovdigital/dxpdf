@@ -79,9 +79,37 @@ jobs:
       - name: Print binary size
         run: ls -lh target/release/dxpdf
 
-  verify-wheel:
-    name: Verify wheel embeds FreeType
-    runs-on: ubuntu-latest
+  # Mirrors the build matrix in `python.yml` to validate every wheel target
+  # is buildable on every PR — not only at release time. Keep the matrix in
+  # sync with `python.yml`; a divergence between the two means the publish
+  # workflow can fail on a target that CI does not exercise.
+  build-wheels:
+    name: Build wheel (${{ matrix.target.label }})
+    runs-on: ${{ matrix.target.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - label: linux-x86_64
+            os: linux
+            runner: ubuntu-latest
+            triple: x86_64-unknown-linux-gnu
+          - label: linux-aarch64
+            os: linux
+            runner: ubuntu-24.04-arm
+            triple: aarch64-unknown-linux-gnu
+          - label: macos-arm64
+            os: macos
+            runner: macos-latest
+            triple: aarch64-apple-darwin
+          - label: macos-x86_64
+            os: macos
+            runner: macos-15-intel
+            triple: x86_64-apple-darwin
+          - label: windows-x86_64
+            os: windows
+            runner: windows-latest
+            triple: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
 
@@ -89,22 +117,30 @@ jobs:
         with:
           python-version: "3.12"
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - name: Build wheel (linux)
+        if: matrix.target.os == 'linux'
+        uses: PyO3/maturin-action@v1
         with:
-          key: verify-wheel
+          args: --release --out dist --features python
+          manylinux: 2014
+          before-script-linux: yum install -y fontconfig-devel freetype-devel clang
+          target: ${{ matrix.target.triple }}
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libfontconfig1-dev clang ninja-build
+      - name: Build wheel (macos)
+        if: matrix.target.os == 'macos'
+        uses: PyO3/maturin-action@v1
+        with:
+          args: --release --out dist --features python
+          target: ${{ matrix.target.triple }}
 
-      - name: Install maturin
-        run: pip install maturin
+      - name: Build wheel (windows)
+        if: matrix.target.os == 'windows'
+        uses: PyO3/maturin-action@v1
+        with:
+          args: --release --out dist --features python
+          target: ${{ matrix.target.triple }}
 
-      - name: Build wheel
-        run: maturin build --release --features python --out dist
-
-      - name: Verify FreeType is embedded
+      - name: Verify FreeType is embedded (linux/macos)
+        if: matrix.target.os != 'windows'
+        shell: bash
         run: python3 scripts/verify_wheel.py dist/*.whl
