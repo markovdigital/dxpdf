@@ -37,10 +37,8 @@ pub fn resolve_sections(doc: &Document) -> Vec<ResolvedSection> {
     for block in &doc.body {
         match block {
             Block::SectionBreak(props) => {
-                let headers =
-                    resolve_set(&props.header_refs, &doc.headers, &prev_headers);
-                let footers =
-                    resolve_set(&props.footer_refs, &doc.footers, &prev_footers);
+                let headers = resolve_set(&props.header_refs, &doc.headers, &prev_headers);
+                let footers = resolve_set(&props.footer_refs, &doc.footers, &prev_footers);
                 prev_headers = headers.clone();
                 prev_footers = footers.clone();
                 sections.push(ResolvedSection {
@@ -56,16 +54,8 @@ pub fn resolve_sections(doc: &Document) -> Vec<ResolvedSection> {
         }
     }
 
-    let headers = resolve_set(
-        &doc.final_section.header_refs,
-        &doc.headers,
-        &prev_headers,
-    );
-    let footers = resolve_set(
-        &doc.final_section.footer_refs,
-        &doc.footers,
-        &prev_footers,
-    );
+    let headers = resolve_set(&doc.final_section.header_refs, &doc.headers, &prev_headers);
+    let footers = resolve_set(&doc.final_section.footer_refs, &doc.footers, &prev_footers);
     sections.push(ResolvedSection {
         blocks: current_blocks,
         headers,
@@ -85,7 +75,9 @@ fn resolve_set(
     prev: &HeaderFooterSet<Vec<Block>>,
 ) -> HeaderFooterSet<Vec<Block>> {
     let resolve_one = |id: Option<&RelId>, fallback: &Option<Vec<Block>>| -> Option<Vec<Block>> {
-        id.and_then(|i| parts.get(i)).cloned().or_else(|| fallback.clone())
+        id.and_then(|i| parts.get(i))
+            .cloned()
+            .or_else(|| fallback.clone())
     };
     HeaderFooterSet {
         default: resolve_one(refs.default.as_ref(), &prev.default),
@@ -375,10 +367,7 @@ mod tests {
         assert_eq!(sections.len(), 3);
         let s3 = &sections[2];
         assert!(s3.headers.default.is_none());
-        assert!(
-            s3.headers.first.is_some(),
-            "S3 inherits `first` from S2",
-        );
+        assert!(s3.headers.first.is_some(), "S3 inherits `first` from S2",);
         assert!(
             s3.headers.even.is_some(),
             "S3 inherits `even` transitively from S1 (S2 didn't override it)",

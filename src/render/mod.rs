@@ -125,7 +125,8 @@ pub fn layout_document(
     let mut all_endnotes = Vec::new();
     let mut last_config = PageConfig::default();
     // Per-section metadata for deferred header/footer rendering.
-    // Carries the section's resolved slot sets and `<w:titlePg/>` flag;
+    // Carries the section's resolved slot sets, `<w:titlePg/>` flag,
+    // and logical page number of the section's first page (§17.6.12);
     // the global `<w:evenAndOddHeaders/>` setting is read once below.
     struct SectionHfInfo<'a> {
         page_range: std::ops::Range<usize>,
@@ -133,8 +134,13 @@ pub fn layout_document(
         headers: &'a crate::render::resolve::header_footer::HeaderFooterSet<Vec<Block>>,
         footers: &'a crate::render::resolve::header_footer::HeaderFooterSet<Vec<Block>>,
         title_pg: bool,
+        logical_page_base: usize,
     }
     let mut section_hf: Vec<SectionHfInfo> = Vec::new();
+    // §17.6.12: logical PAGE numbering accumulates across sections,
+    // resetting wherever a section sets `pgNumType.start`. Document
+    // starts at logical 1 unless the first section overrides it.
+    let mut next_logical: usize = 1;
 
     // §17.11.23: footnote separator indent from default paragraph style.
     let separator_indent = resolved
@@ -213,12 +219,19 @@ pub fn layout_document(
 
         let page_start = all_pages.len();
         all_pages.append(&mut pages);
+        let logical_page_base = layout::header_footer::next_logical_page_base(
+            next_logical,
+            section.properties.page_number_type.as_ref(),
+        );
+        let pages_in_section = all_pages.len() - page_start;
+        next_logical = logical_page_base + pages_in_section;
         section_hf.push(SectionHfInfo {
             page_range: page_start..all_pages.len(),
             config,
             headers: &section.headers,
             footers: &section.footers,
             title_pg: section.properties.title_page.unwrap_or(false),
+            logical_page_base,
         });
     }
 
@@ -241,6 +254,7 @@ pub fn layout_document(
             dlh,
             &PageRange {
                 page_base: info.page_range.start,
+                logical_page_base: info.logical_page_base,
                 total_pages,
             },
         );

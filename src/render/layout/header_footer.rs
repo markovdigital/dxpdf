@@ -89,11 +89,41 @@ pub struct HeaderFooterBlocks<'a> {
 }
 
 /// Page numbering context for header/footer field evaluation.
+///
+/// `logical_page_base` is the value the `PAGE` field reports on the
+/// first page of this section. Per §17.6.12 it is determined by the
+/// section's `<w:pgNumType w:start="…"/>`, falling back to a continuation
+/// of the previous section's logical numbering (see
+/// [`next_logical_page_base`]). Even/odd header selection (§17.10.1)
+/// also operates on this number.
 pub struct PageRange {
     /// 0-based index of the first page in this section within the document.
     pub page_base: usize,
-    /// Total page count in the document.
+    /// Logical (PAGE-field) value of the first page in this section.
+    pub logical_page_base: usize,
+    /// Total physical page count in the document. NUMPAGES uses this
+    /// value; it deliberately tracks physical, not logical, pages —
+    /// matches Word.
     pub total_pages: usize,
+}
+
+/// §17.6.12 — compute the logical page number (PAGE-field value) of a
+/// section's first page. If the section sets `<w:pgNumType w:start>`,
+/// numbering resets to that value; otherwise it continues from the
+/// previous section.
+///
+/// `prev_logical_end` is the value the next page *would* have if
+/// numbering simply continued — i.e. one past the last logical page of
+/// the previous section. For the first section, callers pass `1` so
+/// the document starts at logical page 1 by default.
+pub fn next_logical_page_base(
+    prev_logical_end: usize,
+    page_number_type: Option<&crate::model::PageNumberType>,
+) -> usize {
+    page_number_type
+        .and_then(|pnt| pnt.start)
+        .map(|s| s as usize)
+        .unwrap_or(prev_logical_end)
 }
 
 /// Render headers and footers onto already-laid-out pages.
@@ -112,7 +142,9 @@ pub fn render_headers_footers(
     let content_width = config.content_width();
 
     for (page_idx, page) in pages.iter_mut().enumerate() {
-        let page_number = page_range.page_base + page_idx + 1; // 1-based
+        // Logical page number drives both PAGE-field rendering
+        // (§17.16.4.1) and even/odd header selection (§17.10.1).
+        let logical_page_number = page_range.logical_page_base + page_idx;
         let first_in_section = page_idx == 0;
 
         // §17.10.6 + §17.10.1: pick the slot that applies to this page.
@@ -121,14 +153,14 @@ pub fn render_headers_footers(
         let header_blocks = select_slot(
             hf_blocks.headers,
             first_in_section,
-            page_number,
+            logical_page_number,
             hf_blocks.title_pg,
             hf_blocks.even_and_odd,
         );
         let footer_blocks = select_slot(
             hf_blocks.footers,
             first_in_section,
-            page_number,
+            logical_page_number,
             hf_blocks.title_pg,
             hf_blocks.even_and_odd,
         );
@@ -136,7 +168,7 @@ pub fn render_headers_footers(
         if let Some(blocks) = header_blocks {
             // Set per-page field context for PAGE/NUMPAGES evaluation.
             state.field_ctx = crate::render::layout::fragment::FieldContext {
-                page_number: Some(page_number),
+                page_number: Some(logical_page_number),
                 num_pages: Some(page_range.total_pages),
             };
 
@@ -146,7 +178,7 @@ pub fn render_headers_footers(
 
         if let Some(blocks) = footer_blocks {
             state.field_ctx = crate::render::layout::fragment::FieldContext {
-                page_number: Some(page_number),
+                page_number: Some(logical_page_number),
                 num_pages: Some(page_range.total_pages),
             };
 
@@ -652,6 +684,45 @@ mod tests {
             assert_eq!(select_slot(&set, false, 1, false, false), Some(&"D"));
             assert_eq!(select_slot(&set, false, 2, false, false), Some(&"D"));
             assert_eq!(select_slot(&set, true, 5, false, false), Some(&"D"));
+        }
+
+        // §17.6.12 — pgNumType.start --------------------------------
+
+        #[test]
+        fn next_logical_page_base_continues_when_no_pg_num_type() {
+            // Section without `pgNumType` continues numbering from
+            // `prev_logical_end` (one past the previous section's last
+            // logical page).
+            assert_eq!(next_logical_page_base(1, None), 1);
+            assert_eq!(next_logical_page_base(7, None), 7);
+        }
+
+        #[test]
+        fn next_logical_page_base_uses_start_when_set() {
+            use crate::model::PageNumberType;
+            let pnt = PageNumberType {
+                format: None,
+                start: Some(5),
+                chap_style: None,
+                chap_sep: None,
+            };
+            // The continuation hint is overridden by the explicit start.
+            assert_eq!(next_logical_page_base(99, Some(&pnt)), 5);
+        }
+
+        #[test]
+        fn next_logical_page_base_falls_through_when_start_is_none() {
+            use crate::model::PageNumberType;
+            // pgNumType present but `start` not set — selection should
+            // ignore the (possibly non-default) format/chapStyle and
+            // continue numbering normally.
+            let pnt = PageNumberType {
+                format: None,
+                start: None,
+                chap_style: None,
+                chap_sep: None,
+            };
+            assert_eq!(next_logical_page_base(4, Some(&pnt)), 4);
         }
 
         // Variant returning the kind --------------------------------
