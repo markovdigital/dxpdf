@@ -140,6 +140,60 @@ pub(crate) struct CommonAttrsXml {
     pub wrap: Option<WrapXml>,
     #[serde(rename = "imagedata", default)]
     pub imagedata: Option<ImageDataXml>,
+    #[serde(rename = "fill", default)]
+    pub fill: Option<FillXml>,
+}
+
+/// VML §14.1.2.5 `<v:fill>` — every primitive can carry one. Fields
+/// are admitted as attributes, not children.
+#[derive(Deserialize, Default)]
+pub(crate) struct FillXml {
+    #[serde(rename = "@type", default)]
+    pub fill_type: Option<String>,
+    #[serde(rename = "@color", default)]
+    pub color: Option<String>,
+    #[serde(rename = "@color2", default)]
+    pub color2: Option<String>,
+    #[serde(rename = "@opacity", default)]
+    pub opacity: Option<String>,
+    #[serde(rename = "@src", default)]
+    pub src: Option<String>,
+    #[serde(rename = "@id", default)]
+    pub rel_id: Option<String>,
+}
+
+impl From<FillXml> for crate::docx::model::VmlFill {
+    fn from(x: FillXml) -> Self {
+        use crate::docx::model::{VmlFill, VmlFillType};
+        let fill_type = match x.fill_type.as_deref() {
+            Some("solid") | None => VmlFillType::Solid,
+            Some("gradient") | Some("gradientCenter") | Some("gradientUnscaled") => {
+                VmlFillType::Gradient
+            }
+            Some("gradientRadial") => VmlFillType::GradientRadial,
+            Some("tile") => VmlFillType::Tile,
+            Some("frame") => VmlFillType::Frame,
+            Some("pattern") => VmlFillType::Pattern,
+            // Unknown type → treat as solid; the renderer logs a warn
+            // when it can't honor a fill, never panics.
+            Some(_) => VmlFillType::Solid,
+        };
+        VmlFill {
+            fill_type,
+            color: x.color.as_deref().and_then(|s| parse_color(s).ok()),
+            color2: x.color2.as_deref().and_then(|s| parse_color(s).ok()),
+            opacity: x
+                .opacity
+                .as_deref()
+                .and_then(|s| {
+                    // VML opacity admits "0.5" or "32768f" (fixed-point fraction
+                    // of 65536). For phase C we accept the float form.
+                    s.parse::<f32>().ok()
+                }),
+            src: x.src,
+            rel_id: x.rel_id.map(crate::docx::model::RelId::new),
+        }
+    }
 }
 
 impl CommonAttrsXml {
@@ -153,6 +207,7 @@ impl CommonAttrsXml {
             text_box: self.textbox.map(|t| t.into_model(ctx)),
             wrap: self.wrap.map(Into::into),
             image_data: self.imagedata.map(Into::into),
+            fill: self.fill.map(Into::into),
         }
     }
 }
@@ -238,6 +293,8 @@ pub(crate) struct ShapeXml {
     pub wrap: Option<WrapXml>,
     #[serde(rename = "imagedata", default)]
     pub imagedata: Option<ImageDataXml>,
+    #[serde(rename = "fill", default)]
+    pub fill: Option<FillXml>,
 }
 
 impl ShapeXml {
@@ -252,6 +309,7 @@ impl ShapeXml {
                 text_box: self.textbox.map(|t| t.into_model(ctx)),
                 wrap: self.wrap.map(Into::into),
                 image_data: self.imagedata.map(Into::into),
+                fill: self.fill.map(Into::into),
             },
             shape_type_ref: self
                 .ty
@@ -1106,6 +1164,74 @@ mod tests {
         assert!(matches!(g.children[0], VmlPrimitive::Rect(_)));
         assert!(matches!(g.children[1], VmlPrimitive::Oval(_)));
         assert_eq!(g.coord_size.as_ref().map(|v| v.x), Some(21600));
+    }
+
+    #[test]
+    fn rect_with_fill_child_carries_fill_type_and_color() {
+        // §14.1.2.5: `<v:fill>` overrides `@fillcolor`. The model
+        // carries both — the renderer's fill resolver picks the
+        // child when present.
+        use crate::docx::model::{VmlFillType, VmlPrimitive};
+        let p = parse(
+            r##"<pict>
+                <rect id="r" style="width:50pt;height:30pt" fillcolor="#ff0000">
+                    <fill type="solid" color="#00ff00"/>
+                </rect>
+            </pict>"##,
+        );
+        let VmlPrimitive::Rect(r) = &p.primitives[0] else {
+            panic!();
+        };
+        assert!(matches!(r.common.fill_color, Some(VmlColor::Rgb(0xFF, 0, 0))));
+        let fill = r.common.fill.as_ref().expect("fill child parsed");
+        assert_eq!(fill.fill_type, VmlFillType::Solid);
+        assert!(matches!(fill.color, Some(VmlColor::Rgb(0, 0xFF, 0))));
+    }
+
+    #[test]
+    fn fill_type_gradient_and_tile_are_modeled() {
+        use crate::docx::model::{VmlFillType, VmlPrimitive};
+        for (input, expected) in [
+            ("gradient", VmlFillType::Gradient),
+            ("gradientRadial", VmlFillType::GradientRadial),
+            ("tile", VmlFillType::Tile),
+            ("frame", VmlFillType::Frame),
+            ("pattern", VmlFillType::Pattern),
+        ] {
+            let xml = format!(
+                r##"<pict>
+                    <rect id="r" style="width:10pt;height:10pt">
+                        <fill type="{input}" color="#aabbcc"/>
+                    </rect>
+                </pict>"##
+            );
+            let p = parse(&xml);
+            let VmlPrimitive::Rect(r) = &p.primitives[0] else {
+                panic!();
+            };
+            assert_eq!(
+                r.common.fill.as_ref().unwrap().fill_type,
+                expected,
+                "fill type {input} should map to {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fill_with_image_source_carries_src_attribute() {
+        use crate::docx::model::VmlPrimitive;
+        let p = parse(
+            r#"<pict>
+                <rect id="r" style="width:10pt;height:10pt">
+                    <fill type="frame" src="watermark.png"/>
+                </rect>
+            </pict>"#,
+        );
+        let VmlPrimitive::Rect(r) = &p.primitives[0] else {
+            panic!();
+        };
+        let fill = r.common.fill.as_ref().unwrap();
+        assert_eq!(fill.src.as_deref(), Some("watermark.png"));
     }
 
     #[test]

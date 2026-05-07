@@ -106,6 +106,11 @@ pub(super) fn extract_floating_images(
         });
     }
 
+    // VML primitives that resolve to images (`<v:image>` or
+    // `<v:shape type="#_x0000_t75">` carrying `<v:imagedata>`) ride
+    // through the same `FloatingImage` channel as DrawingML images.
+    extract_vml_floating_images(&para.content, state, frame, ctx, &mut images);
+
     images
 }
 
@@ -242,6 +247,107 @@ pub(super) fn extract_floating_shapes(
 /// page-relative when `position:absolute` and `margin-left`/
 /// `margin-top` are present. The vorlage gray-bar pattern fits this
 /// shape exactly.
+/// Walk inlines for VML primitives that resolve to images
+/// (`<v:image>` or a `<v:shape type="#_x0000_t75">` whose only child
+/// is `<v:imagedata>`). Both forms reach this code path through
+/// `Inline::Pict.primitives`. AlternateContent fallbacks are skipped
+/// — DrawingML in the Choice wins, just like for VML rect (see
+/// `extract_vml_primitive_shapes`).
+fn extract_vml_floating_images(
+    inlines: &[crate::model::Inline],
+    state: &BuildState,
+    frame: AnchorFrame,
+    ctx: &BuildContext,
+    out: &mut Vec<FloatingImage>,
+) {
+    use crate::model::Inline;
+    for inline in inlines {
+        match inline {
+            Inline::Pict(pict) => {
+                for primitive in &pict.primitives {
+                    extract_vml_primitive_image(primitive, state, frame, ctx, out);
+                }
+            }
+            Inline::Hyperlink(link) => {
+                extract_vml_floating_images(&link.content, state, frame, ctx, out)
+            }
+            Inline::Field(f) => {
+                extract_vml_floating_images(&f.content, state, frame, ctx, out)
+            }
+            Inline::AlternateContent(_) => {}
+            _ => {}
+        }
+    }
+}
+
+fn extract_vml_primitive_image(
+    primitive: &model::VmlPrimitive,
+    state: &BuildState,
+    frame: AnchorFrame,
+    ctx: &BuildContext,
+    out: &mut Vec<FloatingImage>,
+) {
+    use crate::model::VmlPrimitive;
+    match primitive {
+        VmlPrimitive::Image(img) => {
+            if let Some(fi) = build_vml_floating_image(&img.common, state, frame, ctx) {
+                out.push(fi);
+            }
+        }
+        // §14.1.2.19 — `<v:shape type="#_x0000_t75"><v:imagedata r:id=…/>`
+        // is the standard pre-DrawingML way to embed an image. We treat
+        // any VmlShape whose `image_data` is set and whose `text_box` is
+        // empty as image-bearing; shapes that *also* host text are handled
+        // elsewhere via the inline fragment collector.
+        VmlPrimitive::Shape(s) if s.common.image_data.is_some() && s.common.text_box.is_none() => {
+            if let Some(fi) = build_vml_floating_image(&s.common, state, frame, ctx) {
+                out.push(fi);
+            }
+        }
+        VmlPrimitive::Group(g) => {
+            for child in &g.children {
+                extract_vml_primitive_image(child, state, frame, ctx, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn build_vml_floating_image(
+    common: &model::VmlCommonAttrs,
+    state: &BuildState,
+    frame: AnchorFrame,
+    ctx: &BuildContext,
+) -> Option<FloatingImage> {
+    use crate::render::layout::section::WrapMode;
+
+    let rel_id = common.image_data.as_ref()?.rel_id.as_ref()?;
+    let image_data = ctx.resolved.media.get(rel_id).cloned()?;
+
+    let (page_x, y) = vml_absolute_position(&common.style)?;
+    let x = match frame {
+        AnchorFrame::Page => page_x,
+        AnchorFrame::Stack => page_x - state.page_config.margins.left,
+    };
+
+    let width = common.style.width.map(vml_length_to_pt)?;
+    let height = common.style.height.map(vml_length_to_pt)?;
+    if width <= Pt::ZERO || height <= Pt::ZERO {
+        return None;
+    }
+
+    Some(FloatingImage {
+        image_data,
+        size: PtSize::new(width, height),
+        x,
+        y: FloatingImageY::RelativeToParagraph(y),
+        wrap_mode: WrapMode::None,
+        dist_left: Pt::ZERO,
+        dist_right: Pt::ZERO,
+        behind_doc: false,
+    })
+}
+
 fn extract_vml_primitive_shapes(
     inlines: &[crate::model::Inline],
     state: &BuildState,
@@ -289,27 +395,43 @@ fn extract_vml_primitive(
                 out.push(shape);
             }
         }
-        // §14.1.2.9: groups carry their own coord system; for now we
-        // recurse without applying the transform — most groups in
-        // practice use the page coord system anyway. Phase D will
-        // honor `coordsize`/`coordorigin`.
+        // §14.1.2.17 `<v:roundrect>`: rounded-corner variant. The
+        // corner radius is `arcsize * min(width, height) / 2` —
+        // small radii barely distinguish from a plain rect at typical
+        // doc resolutions, so for Tier 0 we render as a plain
+        // rectangle. The `arcsize` value survives in the model for a
+        // future rounded-path build.
+        VmlPrimitive::RoundRect(r) => {
+            if let Some(shape) = build_vml_rect_shape(&r.common, state, frame) {
+                out.push(shape);
+            }
+        }
+        // §14.1.2.9: groups carry their own coord system; we walk
+        // children so any absolute-positioned descendants reach the
+        // page. The local-coord transform (`coordsize`/`coordorigin`
+        // → page coords) for relative-positioned children is left
+        // for a future phase — most authored groups in headers and
+        // footers use absolute positioning and don't depend on it.
         VmlPrimitive::Group(g) => {
             for child in &g.children {
                 extract_vml_primitive(child, state, frame, out);
             }
         }
-        // Other variants are modeled but not yet emitted as shapes.
-        // Their text-box content is still consumed by the inline
-        // fragment collector, which keeps `<v:shape>`-style text
-        // boxes working as before.
+        // Image variants don't produce a `FloatingShape` — they go
+        // through the parallel `extract_vml_floating_images` path
+        // and emit `FloatingImage` instead.
+        VmlPrimitive::Image(_) => {}
+        // Long-tail primitives modeled in Phase A but not yet
+        // emitted as shapes (oval/line/polyline/arc/curve). Phase D
+        // will dispatch them to `DrawCommand::Path` / `Line`. Their
+        // text-box content (where applicable) is still picked up by
+        // the inline fragment collector.
         VmlPrimitive::Shape(_)
-        | VmlPrimitive::RoundRect(_)
         | VmlPrimitive::Oval(_)
         | VmlPrimitive::Line(_)
         | VmlPrimitive::PolyLine(_)
         | VmlPrimitive::Arc(_)
-        | VmlPrimitive::Curve(_)
-        | VmlPrimitive::Image(_) => {}
+        | VmlPrimitive::Curve(_) => {}
     }
 }
 
@@ -329,8 +451,6 @@ fn build_vml_rect_shape(
     frame: AnchorFrame,
 ) -> Option<FloatingShape> {
     use crate::render::geometry::PtOffset;
-    use crate::render::layout::draw_command::ResolvedFill;
-    use crate::render::resolve::drawing_color::Rgba;
     use crate::render::resolve::shape_geometry::{PathVerb, SubPath};
 
     // Position via `position:absolute` + `margin-left/top`. VML's
@@ -358,17 +478,11 @@ fn build_vml_rect_shape(
     }
     let extent = PtSize::new(width, height);
 
-    // Resolve fill from `@fillcolor`. Tier 0 only handles solid
-    // colors; gradients and patterns log-and-fall-through elsewhere.
-    let fill = match common.fill_color {
-        Some(crate::model::VmlColor::Rgb(r, g, b)) => ResolvedFill::Solid(Rgba {
-            r: r as f32 / 255.0,
-            g: g as f32 / 255.0,
-            b: b as f32 / 255.0,
-            a: 1.0,
-        }),
-        Some(crate::model::VmlColor::Named(_)) | None => ResolvedFill::None,
-    };
+    // Fill resolution per §14.1.2.5: a `<v:fill>` child overrides
+    // `@fillcolor`. We honor solid fills natively and degrade
+    // gradient/tile/pattern/frame to `ResolvedFill::None` with a
+    // one-time log so the rest of the shape still renders.
+    let fill = resolve_vml_solid_fill(common);
 
     // Build a closed-rectangle path in shape-local Pt. The painter
     // applies the `(x, y)` and `size` to position the path.
@@ -616,6 +730,58 @@ fn vml_absolute_position(style: &model::VmlStyle) -> Option<(Pt, Pt)> {
     let x = style.margin_left.map(vml_length_to_pt)?;
     let y = style.margin_top.map(vml_length_to_pt)?;
     Some((x, y))
+}
+
+/// Compute the effective solid `ResolvedFill` for a VML primitive
+/// per §14.1.2.5. The `<v:fill>` child wins over `@fillcolor`. Only
+/// the `Solid` fill type is honored here; the others log once and
+/// degrade to `ResolvedFill::None` so the shape's outline / text
+/// content still renders.
+fn resolve_vml_solid_fill(common: &model::VmlCommonAttrs) -> crate::render::layout::draw_command::ResolvedFill {
+    use crate::model::{VmlColor, VmlFillType};
+    use crate::render::layout::draw_command::ResolvedFill;
+    use crate::render::resolve::drawing_color::Rgba;
+
+    let to_solid = |c: &VmlColor| -> Option<ResolvedFill> {
+        match c {
+            VmlColor::Rgb(r, g, b) => Some(ResolvedFill::Solid(Rgba {
+                r: *r as f32 / 255.0,
+                g: *g as f32 / 255.0,
+                b: *b as f32 / 255.0,
+                a: 1.0,
+            })),
+            // Named/system colors aren't yet resolved — fall through.
+            VmlColor::Named(_) => None,
+        }
+    };
+
+    if let Some(ref fill) = common.fill {
+        match fill.fill_type {
+            VmlFillType::Solid => {
+                if let Some(c) = fill.color.as_ref().and_then(to_solid) {
+                    return c;
+                }
+                // Solid type with no `@color` — fall back to attribute.
+            }
+            VmlFillType::Gradient
+            | VmlFillType::GradientRadial
+            | VmlFillType::Tile
+            | VmlFillType::Frame
+            | VmlFillType::Pattern => {
+                log::warn!(
+                    "vml: unsupported fill type {:?} — rendering as no-fill",
+                    fill.fill_type
+                );
+                return ResolvedFill::None;
+            }
+        }
+    }
+
+    common
+        .fill_color
+        .as_ref()
+        .and_then(to_solid)
+        .unwrap_or(ResolvedFill::None)
 }
 
 /// Convert a VML CSS length to points.

@@ -125,6 +125,54 @@ pub struct VmlCommonAttrs {
     pub wrap: Option<VmlWrap>,
     /// VML §14.1.2.11: image data reference.
     pub image_data: Option<VmlImageData>,
+    /// VML §14.1.2.5 `<v:fill>` — fill child element. When present,
+    /// overrides the `@fillcolor` attribute. Carries gradient/pattern/
+    /// image fill specifications that the attribute can't express.
+    pub fill: Option<VmlFill>,
+}
+
+/// VML §14.1.2.5 `<v:fill>` — fill specification on any shape.
+///
+/// The element carries many attributes; we model the most-used
+/// subset and grow on demand. Non-solid fills (gradient/tile/pattern/
+/// frame) are modeled but only `Solid` is renderered today; the
+/// renderer falls through with a one-time `log::warn!` for the rest.
+#[derive(Clone, Debug, Default)]
+pub struct VmlFill {
+    /// `@type` — fill kind. Defaults to `Solid` when omitted (matches
+    /// spec).
+    pub fill_type: VmlFillType,
+    /// `@color` — primary color (used by Solid and most gradient
+    /// types as the start color).
+    pub color: Option<VmlColor>,
+    /// `@color2` — secondary color (gradient end / pattern bg).
+    pub color2: Option<VmlColor>,
+    /// `@opacity` — 0..1; missing means opaque.
+    pub opacity: Option<f32>,
+    /// `@src` — relative path to a fill image (Tile/Frame).
+    pub src: Option<String>,
+    /// `r:id` — relationship-ID alternative to `@src` for fill image.
+    pub rel_id: Option<RelId>,
+}
+
+/// VML §14.1.2.5 `@type` values. The spec also defines
+/// `gradientCenter` and `gradientUnscaled`, which we treat as
+/// gradient kinds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VmlFillType {
+    /// Solid color (default).
+    #[default]
+    Solid,
+    /// Linear/axial gradient.
+    Gradient,
+    /// Radial gradient.
+    GradientRadial,
+    /// Tiled image fill.
+    Tile,
+    /// Frame (single-image) fill.
+    Frame,
+    /// Pattern fill with foreground/background colors.
+    Pattern,
 }
 
 /// VML §14.1.2.16 `<v:rect>` — bounding-box rectangle.
