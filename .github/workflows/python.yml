@@ -68,7 +68,12 @@ jobs:
           CFLAGS: --gcc-toolchain=/opt/rh/gcc-toolset-13/root/usr
           CXXFLAGS: --gcc-toolchain=/opt/rh/gcc-toolset-13/root/usr
           BINDGEN_EXTRA_CLANG_ARGS: --gcc-toolchain=/opt/rh/gcc-toolset-13/root/usr
-          SKIA_GN_ARGS: 'extra_cflags+=["--gcc-toolchain=/opt/rh/gcc-toolset-13/root/usr"] extra_ldflags+=["--gcc-toolchain=/opt/rh/gcc-toolset-13/root/usr"]'
+          # `+=` requires the variable to already exist in the GN scope.
+          # `extra_cflags` is auto-set by skia-bindings (so `+=` extends it);
+          # `extra_ldflags` is not, so we'd get "Undefined identifier" on `+=`.
+          # The Skia build only emits static archives (no link step), so we
+          # don't need extra_ldflags here — the cdylib link is rustc's job.
+          SKIA_GN_ARGS: 'extra_cflags+=["--gcc-toolchain=/opt/rh/gcc-toolset-13/root/usr"]'
         with:
           args: --release --out dist --features python
           manylinux: 2_28
