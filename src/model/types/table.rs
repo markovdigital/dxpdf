@@ -1,7 +1,7 @@
 //! Table types — table, row, cell properties, borders, positioning.
 
 use crate::model::dimension::{Dimension, ThousandthPercent, Twips};
-use crate::model::geometry::EdgeInsets;
+use crate::model::geometry::{EdgeInsets, PartialEdgeInsets};
 
 use super::content::Block;
 use super::formatting::{
@@ -155,7 +155,10 @@ pub struct TableCellProperties {
     pub width: Option<TableMeasure>,
     pub borders: Option<TableCellBorders>,
     pub shading: Option<Shading>,
-    pub margins: Option<EdgeInsets<Twips>>,
+    /// §17.4.42 `<w:tcMar>` — per-cell margin override. Each side is `Some`
+    /// only when explicitly present in the XML; missing sides inherit from
+    /// the table-level `<w:tblCellMar>` via `PartialEdgeInsets::resolve_against`.
+    pub margins: Option<PartialEdgeInsets<Twips>>,
     pub vertical_align: Option<CellVerticalAlign>,
     /// Vertical merge (w:vMerge): None = not present, Some(Restart) or Some(Continue).
     pub vertical_merge: Option<VerticalMerge>,
