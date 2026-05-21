@@ -352,9 +352,7 @@ pub(super) fn build_table(
 /// cascade resolution) so downstream measure/emit/split code sees uniform
 /// vertical insets and needs no further changes.
 fn normalize_row_uniform_vertical_insets(cells: &mut [TableCellInput]) {
-    let max_top = cells
-        .iter()
-        .fold(Pt::ZERO, |acc, c| acc.max(c.margins.top));
+    let max_top = cells.iter().fold(Pt::ZERO, |acc, c| acc.max(c.margins.top));
     let max_bottom = cells
         .iter()
         .fold(Pt::ZERO, |acc, c| acc.max(c.margins.bottom));
@@ -608,9 +606,9 @@ mod tests {
         // cascade) and another with the inherited 57-twip table default
         // (≈ 2.85 pt) — siblings without a tcMar override.
         let mut cells = vec![
-            cell_with_margins(0.0, 5.4, 0.0, 5.15),  // Keller-like
+            cell_with_margins(0.0, 5.4, 0.0, 5.15),   // Keller-like
             cell_with_margins(2.85, 5.4, 2.85, 5.15), // sibling with table default
-            cell_with_margins(0.0, 5.4, 0.0, 5.15),  // another Keller-like
+            cell_with_margins(0.0, 5.4, 0.0, 5.15),   // another Keller-like
         ];
         normalize_row_uniform_vertical_insets(&mut cells);
 
