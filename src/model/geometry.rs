@@ -89,3 +89,45 @@ impl<U: Unit> EdgeInsets<U> {
         }
     }
 }
+
+/// Edge insets where each side may be unspecified — used for cell-level
+/// overrides (`<w:tcMar>`) that cascade against a parent default. Per
+/// OOXML §17.4.42, an explicit `<w:tcMar>` with only some sides present
+/// inherits the remaining sides from the table-level `<w:tblCellMar>`;
+/// `unwrap_or_default()` per side would incorrectly zero out the inherited
+/// values (visible as missing left/right padding inside a cell whose
+/// `tcMar` set only `top` and `bottom`). `resolve_against` performs the
+/// per-side fallback.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PartialEdgeInsets<U: Unit> {
+    pub top: Option<Dimension<U>>,
+    pub right: Option<Dimension<U>>,
+    pub bottom: Option<Dimension<U>>,
+    pub left: Option<Dimension<U>>,
+}
+
+impl<U: Unit> PartialEdgeInsets<U> {
+    pub const fn new(
+        top: Option<Dimension<U>>,
+        right: Option<Dimension<U>>,
+        bottom: Option<Dimension<U>>,
+        left: Option<Dimension<U>>,
+    ) -> Self {
+        Self {
+            top,
+            right,
+            bottom,
+            left,
+        }
+    }
+
+    /// Resolve unspecified sides against a fully-specified default.
+    pub fn resolve_against(self, default: EdgeInsets<U>) -> EdgeInsets<U> {
+        EdgeInsets {
+            top: self.top.unwrap_or(default.top),
+            right: self.right.unwrap_or(default.right),
+            bottom: self.bottom.unwrap_or(default.bottom),
+            left: self.left.unwrap_or(default.left),
+        }
+    }
+}

@@ -193,12 +193,16 @@ pub(super) fn build_table(
                     }
                     let grid_end = (grid_start + span).min(col_widths.len());
                     let cell_width: Pt = col_widths[grid_start..grid_end].iter().copied().sum();
-                    let cell_margins_h = cell
-                        .properties
-                        .margins
-                        .or(default_cell_margins)
-                        .map(|m| Pt::from(m.left) + Pt::from(m.right))
-                        .unwrap_or(Pt::ZERO);
+                    // Per-side cascade against the table default (see
+                    // `build_table_cell` for the spec rationale): the horizontal
+                    // padding contribution is the resolved left+right insets.
+                    let table_default =
+                        default_cell_margins.unwrap_or(crate::model::geometry::EdgeInsets::ZERO);
+                    let resolved_h = match cell.properties.margins {
+                        Some(partial) => partial.resolve_against(table_default),
+                        None => table_default,
+                    };
+                    let cell_margins_h = Pt::from(resolved_h.left) + Pt::from(resolved_h.right);
                     let inner_width = (cell_width - cell_margins_h).max(Pt::ZERO);
 
                     build_table_cell(
@@ -212,6 +216,12 @@ pub(super) fn build_table(
                     )
                 })
                 .collect();
+
+            // Word/LibreOffice row-uniform content-area quirk — see
+            // `normalize_row_uniform_vertical_insets` for the spec gap and
+            // empirical evidence motivating this pass.
+            let mut cells = cells;
+            normalize_row_uniform_vertical_insets(&mut cells);
 
             TableRowInput {
                 cells,
@@ -290,6 +300,68 @@ pub(super) fn build_table(
     }
 }
 
+/// Word/LibreOffice row layout quirk: top/bottom cell margins are normalized
+/// to the row-wide maximum across all cells in the row, while left/right stay
+/// per-cell.
+///
+/// # Spec relationship
+///
+/// ECMA-376 §17.4.42 (`tcMar`, "Single Table Cell Margins") defines the cell
+/// margin as a per-side exception over §17.4.44 (`tblCellMar`, the table-level
+/// default). Each side is a `CT_TblWidth` (§17.18.87), where `@type="dxa"
+/// @w="N"` is an explicit `N`-twip value. The spec is silent on how
+/// *neighbouring* cells in the same row interact when their per-cell margins
+/// disagree — there is no row-level "content area" concept defined in
+/// §17.4.78 (`tr`) or §17.4.79 (`trHeight`).
+///
+/// The de-facto behaviour of every mainstream renderer (Word and LibreOffice
+/// Writer in particular) is to compute a row-uniform content inset:
+///
+/// ```text
+/// row.uniform_top    = max(cell.tcMar.top    for cell in row)
+/// row.uniform_bottom = max(cell.tcMar.bottom for cell in row)
+/// ```
+///
+/// and to position every cell's content within that uniform inset regardless
+/// of the cell's own per-cell override. Without this pass, a cell with an
+/// explicit `tcMar.top=0` in a row whose siblings inherit a larger value sits
+/// flush against the row's top border while its neighbours sit padded — a
+/// positioning no mainstream editor produces.
+///
+/// # Empirical basis
+///
+/// Verified against the `Wohnungsübergabeprotokoll` sample (LibreOffice
+/// origin) by editing the DOCX directly and observing Word's render:
+///
+/// 1. Rewriting all `<w:tcMar><w:top w:w="0"/></w:tcMar>` to
+///    `<w:top w:w="1"/>` produced **byte-equivalent visual output** — Word
+///    is invariant to the literal value at this magnitude, ruling out
+///    "Word treats `w=0` as no-override" as the explanation.
+/// 2. Rewriting just one cell's `<w:tcMar>` to `<w:top w:w="500"/>` (≈ 25pt)
+///    pushed **every** cell in that row down by ~25pt, confirming the
+///    row-wide max(...) discipline.
+///
+/// # Scope
+///
+/// Only `top` and `bottom` are normalized. `left` and `right` stay per-cell
+/// because each column's content width is independent — there is no shared
+/// row-wide horizontal area in the de-facto layout, and editors do honour
+/// per-cell horizontal overrides.
+///
+/// Applied at the build layer (post per-side `<w:tcMar>`/`<w:tblCellMar>`
+/// cascade resolution) so downstream measure/emit/split code sees uniform
+/// vertical insets and needs no further changes.
+fn normalize_row_uniform_vertical_insets(cells: &mut [TableCellInput]) {
+    let max_top = cells.iter().fold(Pt::ZERO, |acc, c| acc.max(c.margins.top));
+    let max_bottom = cells
+        .iter()
+        .fold(Pt::ZERO, |acc, c| acc.max(c.margins.bottom));
+    for cell in cells {
+        cell.margins.top = max_top;
+        cell.margins.bottom = max_bottom;
+    }
+}
+
 /// Build a single table cell: resolve content blocks, margins, shading, borders.
 fn build_table_cell(
     cell: &TableCell,
@@ -300,20 +372,23 @@ fn build_table_cell(
     ctx: &BuildContext,
     state: &mut BuildState,
 ) -> TableCellInput {
-    // §17.4.42: cell margins cascade: cell-level tcMar → pre-merged table default.
-    let cell_margins = cell
-        .properties
-        .margins
-        .or(style_cell_margins)
-        .map(|m| {
-            geometry::PtEdgeInsets::new(
-                Pt::from(m.top),
-                Pt::from(m.right),
-                Pt::from(m.bottom),
-                Pt::from(m.left),
-            )
-        })
-        .unwrap_or(geometry::PtEdgeInsets::ZERO);
+    // §17.4.42: cell margins cascade *per side* against the pre-merged
+    // table default. A cell-level `<w:tcMar>` that specifies only some sides
+    // (e.g. `top`/`bottom` only — common in LibreOffice output) must inherit
+    // the remaining sides from `<w:tblCellMar>` rather than zeroing them out;
+    // collapsing missing sides to 0 produces text that hugs the cell borders
+    // instead of carrying the table's intended padding.
+    let table_default = style_cell_margins.unwrap_or(crate::model::geometry::EdgeInsets::ZERO);
+    let resolved_margins = match cell.properties.margins {
+        Some(partial) => partial.resolve_against(table_default),
+        None => table_default,
+    };
+    let cell_margins = geometry::PtEdgeInsets::new(
+        Pt::from(resolved_margins.top),
+        Pt::from(resolved_margins.right),
+        Pt::from(resolved_margins.bottom),
+        Pt::from(resolved_margins.left),
+    );
 
     // §17.7.6: resolve cell shading.  Priority: direct → conditional → none.
     let shading = cell
@@ -495,4 +570,99 @@ fn build_cell_blocks(
     }
 
     blocks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::layout::table::{CellVAlign, TableCellInput};
+
+    fn cell_with_margins(top: f32, right: f32, bottom: f32, left: f32) -> TableCellInput {
+        TableCellInput {
+            blocks: vec![],
+            margins: geometry::PtEdgeInsets::new(
+                Pt::new(top),
+                Pt::new(right),
+                Pt::new(bottom),
+                Pt::new(left),
+            ),
+            grid_span: 1,
+            shading: None,
+            cell_borders: None,
+            vertical_merge: None,
+            vertical_align: CellVAlign::Top,
+        }
+    }
+
+    /// Word/Writer row-uniform content-area normalization: when cells in a row
+    /// disagree on `tcMar.top` (or `bottom`), the row-wide *maximum* wins for
+    /// every cell. Verified empirically against MS Word — see
+    /// [`normalize_row_uniform_vertical_insets`] for the experimental
+    /// reproducer and spec references.
+    #[test]
+    fn row_uniform_picks_max_top_and_bottom_across_row() {
+        // Mirrors the Wohnungsübergabe "Keller" row: one cell with
+        // explicit zero top/bottom (the Keller cell after per-side tcMar
+        // cascade) and another with the inherited 57-twip table default
+        // (≈ 2.85 pt) — siblings without a tcMar override.
+        let mut cells = vec![
+            cell_with_margins(0.0, 5.4, 0.0, 5.15),   // Keller-like
+            cell_with_margins(2.85, 5.4, 2.85, 5.15), // sibling with table default
+            cell_with_margins(0.0, 5.4, 0.0, 5.15),   // another Keller-like
+        ];
+        normalize_row_uniform_vertical_insets(&mut cells);
+
+        for (i, cell) in cells.iter().enumerate() {
+            assert_eq!(
+                cell.margins.top.raw(),
+                2.85,
+                "cell #{i}: every cell's top inset must equal the row-wide max"
+            );
+            assert_eq!(
+                cell.margins.bottom.raw(),
+                2.85,
+                "cell #{i}: every cell's bottom inset must equal the row-wide max"
+            );
+            // Horizontal stays per-cell.
+            assert_eq!(cell.margins.left.raw(), 5.15, "left is per-cell");
+            assert_eq!(cell.margins.right.raw(), 5.4, "right is per-cell");
+        }
+    }
+
+    /// Mirrors the `_kellertop500` experiment: a single cell with a `tcMar.top`
+    /// far larger than its siblings becomes the row-wide max, so every cell —
+    /// including the ones with no override — picks up that large top inset.
+    /// In Word, this is observable as the entire row's content shifting down.
+    #[test]
+    fn row_uniform_one_large_cell_top_pushes_whole_row_down() {
+        let mut cells = vec![
+            cell_with_margins(25.0, 5.4, 0.0, 5.15), // Keller with top=25pt
+            cell_with_margins(2.85, 5.4, 2.85, 5.15), // small sibling
+        ];
+        normalize_row_uniform_vertical_insets(&mut cells);
+
+        assert_eq!(
+            cells[1].margins.top.raw(),
+            25.0,
+            "sibling cell inherits the large top from the dominating cell"
+        );
+        // Bottom max is the smaller cell's 2.85 (Keller bottom stayed 0).
+        assert_eq!(cells[0].margins.bottom.raw(), 2.85);
+    }
+
+    #[test]
+    fn row_uniform_single_cell_row_is_noop() {
+        let mut cells = vec![cell_with_margins(2.85, 5.4, 2.85, 5.15)];
+        let before = cells[0].margins;
+        normalize_row_uniform_vertical_insets(&mut cells);
+        assert_eq!(cells[0].margins, before);
+    }
+
+    #[test]
+    fn row_uniform_handles_empty_row() {
+        let mut cells: Vec<TableCellInput> = vec![];
+        normalize_row_uniform_vertical_insets(&mut cells);
+        // No panic, no work done.
+        assert!(cells.is_empty());
+    }
 }

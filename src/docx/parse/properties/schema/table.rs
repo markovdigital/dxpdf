@@ -7,7 +7,6 @@
 use serde::{Deserialize, Deserializer};
 
 use crate::docx::model::dimension::Twips;
-use crate::docx::model::geometry::EdgeInsets;
 use crate::docx::model::{
     Alignment, CnfStyle, StyleId, TableCellProperties, TableLook, TablePositioning,
     TableProperties, TableRowHeight, TableRowProperties, VerticalMerge,
@@ -376,7 +375,7 @@ impl From<TcPrXml> for TableCellProperties {
             width: x.tc_w.map(Into::into),
             borders: x.tc_borders.map(Into::into),
             shading: x.shd.map(Into::into),
-            margins: x.tc_mar.map(EdgeInsets::from),
+            margins: x.tc_mar.map(Into::into),
             vertical_align: x
                 .v_align
                 .map(|v| crate::docx::model::CellVerticalAlign::from(v.val)),
