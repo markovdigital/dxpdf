@@ -18,6 +18,15 @@ use super::lang::LangXml;
 use super::shading::ShdXml;
 
 /// Schema for the `<w:rPr>` element. All fields optional.
+///
+/// OnOff toggles are typed as `Vec<OnOff>` rather than `Option<OnOff>` because
+/// some third-party DOCX writers (notably LibreOffice/AOO) emit redundant
+/// duplicates like `<w:b/><w:b/>` within a single `<w:rPr>`. Word tolerates
+/// these via the "last wins" property cascade; the derived `Option<T>`
+/// deserializer would reject the second occurrence as a duplicate field and
+/// fail otherwise-valid documents. quick-xml + serde natively accumulate
+/// repeated XML children into `Vec<T>`, so the derive stays clean and `split`
+/// takes the final element per spec semantics.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub(crate) struct RPrXml {
     #[serde(rename = "rStyle", default)]
@@ -29,15 +38,15 @@ pub(crate) struct RPrXml {
     sz: Option<ValAttr<Dimension<HalfPoints>>>,
     // Complex-script counterparts are intentionally ignored — renderer uses a single size.
     #[serde(rename = "b", default)]
-    b: Option<OnOff>,
+    b: Vec<OnOff>,
     #[serde(rename = "i", default)]
-    i: Option<OnOff>,
+    i: Vec<OnOff>,
     #[serde(rename = "u", default)]
     u: Option<UnderlineXml>,
     #[serde(rename = "strike", default)]
-    strike: Option<OnOff>,
+    strike: Vec<OnOff>,
     #[serde(rename = "dstrike", default)]
-    dstrike: Option<OnOff>,
+    dstrike: Vec<OnOff>,
 
     #[serde(rename = "color", default)]
     color: Option<ColorXml>,
@@ -58,25 +67,25 @@ pub(crate) struct RPrXml {
     char_scale: Option<ValAttr<u16>>,
 
     #[serde(rename = "caps", default)]
-    caps: Option<OnOff>,
+    caps: Vec<OnOff>,
     #[serde(rename = "smallCaps", default)]
-    small_caps: Option<OnOff>,
+    small_caps: Vec<OnOff>,
     #[serde(rename = "vanish", default)]
-    vanish: Option<OnOff>,
+    vanish: Vec<OnOff>,
     #[serde(rename = "noProof", default)]
-    no_proof: Option<OnOff>,
+    no_proof: Vec<OnOff>,
     #[serde(rename = "webHidden", default)]
-    web_hidden: Option<OnOff>,
+    web_hidden: Vec<OnOff>,
     #[serde(rename = "rtl", default)]
-    rtl: Option<OnOff>,
+    rtl: Vec<OnOff>,
     #[serde(rename = "emboss", default)]
-    emboss: Option<OnOff>,
+    emboss: Vec<OnOff>,
     #[serde(rename = "imprint", default)]
-    imprint: Option<OnOff>,
+    imprint: Vec<OnOff>,
     #[serde(rename = "outline", default)]
-    outline: Option<OnOff>,
+    outline: Vec<OnOff>,
     #[serde(rename = "shadow", default)]
-    shadow: Option<OnOff>,
+    shadow: Vec<OnOff>,
 
     #[serde(rename = "position", default)]
     position: Option<ValAttr<Dimension<HalfPoints>>>,
@@ -85,6 +94,13 @@ pub(crate) struct RPrXml {
     lang: Option<LangXml>,
     #[serde(rename = "bdr", default)]
     bdr: Option<BorderXml>,
+}
+
+/// OOXML §17.7.2 — when the same toggle element repeats inside one container,
+/// the last occurrence wins. Returns `None` when the toggle is absent so the
+/// style cascade can supply an inherited value.
+fn last_toggle(toggles: Vec<OnOff>) -> Option<bool> {
+    toggles.into_iter().last().map(|OnOff(b)| b)
 }
 
 /// `<w:u w:val="..."/>` — underline. Unlike other ST-enum wrappers we can't
@@ -128,8 +144,8 @@ impl RPrXml {
         let props = RunProperties {
             fonts: self.r_fonts.map(Into::into).unwrap_or_default(),
             font_size: self.sz.map(|s| s.val),
-            bold: self.b.map(|OnOff(b)| b),
-            italic: self.i.map(|OnOff(b)| b),
+            bold: last_toggle(self.b),
+            italic: last_toggle(self.i),
             underline: self.u.and_then(resolve_underline),
             strike: resolve_strike(self.strike, self.dstrike),
             color: self.color.map(|c| c.val.into()),
@@ -138,16 +154,16 @@ impl RPrXml {
             vertical_align: self.vert_align.map(|v| v.val.into()),
             spacing: self.spacing.map(|s| s.val),
             kerning: self.kern.map(|k| k.val),
-            all_caps: self.caps.map(|OnOff(b)| b),
-            small_caps: self.small_caps.map(|OnOff(b)| b),
-            vanish: self.vanish.map(|OnOff(b)| b),
-            no_proof: self.no_proof.map(|OnOff(b)| b),
-            web_hidden: self.web_hidden.map(|OnOff(b)| b),
-            rtl: self.rtl.map(|OnOff(b)| b),
-            emboss: self.emboss.map(|OnOff(b)| b),
-            imprint: self.imprint.map(|OnOff(b)| b),
-            outline: self.outline.map(|OnOff(b)| b),
-            shadow: self.shadow.map(|OnOff(b)| b),
+            all_caps: last_toggle(self.caps),
+            small_caps: last_toggle(self.small_caps),
+            vanish: last_toggle(self.vanish),
+            no_proof: last_toggle(self.no_proof),
+            web_hidden: last_toggle(self.web_hidden),
+            rtl: last_toggle(self.rtl),
+            emboss: last_toggle(self.emboss),
+            imprint: last_toggle(self.imprint),
+            outline: last_toggle(self.outline),
+            shadow: last_toggle(self.shadow),
             position: self.position.map(|p| p.val),
             lang: self.lang.map(Into::into),
             border: self.bdr.map(Into::into),
@@ -174,16 +190,21 @@ fn resolve_underline(u: UnderlineXml) -> Option<UnderlineStyle> {
 }
 
 /// `<w:strike/>` and `<w:dstrike/>` are separate OnOff toggles; dstrike
-/// takes precedence when both are on.
-fn resolve_strike(strike: Option<OnOff>, dstrike: Option<OnOff>) -> Option<StrikeStyle> {
-    let d = dstrike.map(|OnOff(b)| b).unwrap_or(false);
-    let s = strike.map(|OnOff(b)| b).unwrap_or(false);
+/// takes precedence when both are on. Each input is the full list of repeated
+/// occurrences inside the parent `<w:rPr>` — by §17.7.2 last-wins cascade,
+/// only the final element of each list is observable, so we collapse before
+/// resolving precedence.
+fn resolve_strike(strike: Vec<OnOff>, dstrike: Vec<OnOff>) -> Option<StrikeStyle> {
+    let strike_present = !strike.is_empty();
+    let dstrike_present = !dstrike.is_empty();
+    let s = last_toggle(strike).unwrap_or(false);
+    let d = last_toggle(dstrike).unwrap_or(false);
     match (d, s) {
         (true, _) => Some(StrikeStyle::Double),
         (false, true) => Some(StrikeStyle::Single),
         (false, false) => {
             // explicit off → Some(None), absent → None
-            if strike.is_some() || dstrike.is_some() {
+            if strike_present || dstrike_present {
                 Some(StrikeStyle::None)
             } else {
                 None
@@ -385,6 +406,26 @@ mod tests {
         let (rp, _) = parse(r#"<rPr><rFonts ascii="Calibri" hAnsiTheme="minorHAnsi"/></rPr>"#);
         assert_eq!(rp.fonts.ascii.explicit.as_deref(), Some("Calibri"));
         assert!(rp.fonts.high_ansi.theme.is_some());
+    }
+
+    #[test]
+    fn duplicate_toggle_is_tolerated_last_wins() {
+        // Real-world LibreOffice DOCX writers occasionally emit duplicate
+        // self-closing toggles like `<w:b/><w:b/>`. Word renders these without
+        // complaint — last-wins semantics means the second copy is a no-op.
+        // The derived serde impl would error with `duplicate field`; the
+        // manual Deserialize impl on RPrXml must accept it.
+        let (rp, _) = parse(r#"<rPr><b/><b/></rPr>"#);
+        assert_eq!(rp.bold, Some(true));
+    }
+
+    #[test]
+    fn duplicate_toggle_last_wins_when_values_differ() {
+        // If two duplicate toggles disagree, last wins.
+        let (rp, _) = parse(r#"<rPr><b val="0"/><b/></rPr>"#);
+        assert_eq!(rp.bold, Some(true));
+        let (rp, _) = parse(r#"<rPr><b/><b val="0"/></rPr>"#);
+        assert_eq!(rp.bold, Some(false));
     }
 
     #[test]
