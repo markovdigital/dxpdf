@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "dxpdf", about = "Convert DOCX files to PDF")]
+#[command(name = "dxpdf", about = "DOCX files to PDF converter")]
 struct Cli {
     /// Input .docx file
     input: PathBuf,
