@@ -527,7 +527,10 @@ mod tests {
             paragraph_style: None,
         };
         let font = build_label_font_props(&cascade, "Helvetica", Pt::new(12.0));
-        assert!(font.underline, "level rPr <w:u/> must become font.underline");
+        assert!(
+            font.underline,
+            "level rPr <w:u/> must become font.underline"
+        );
     }
 
     /// Cascade depth: when the level layer doesn't set underline but
@@ -704,12 +707,12 @@ mod tests {
             Some(Dimension::<Twips>::new(40)),
             "from mark"
         );
+        assert_eq!(effective.color, Some(Color::Rgb(0x112233)), "from style");
         assert_eq!(
-            effective.color,
-            Some(Color::Rgb(0x112233)),
+            effective.text_scale,
+            Some(TextScale::new(120)),
             "from style"
         );
-        assert_eq!(effective.text_scale, Some(TextScale::new(120)), "from style");
         assert_eq!(
             effective.fonts.ascii.explicit.as_deref(),
             Some("Calibri"),
