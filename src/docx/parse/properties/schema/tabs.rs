@@ -44,14 +44,12 @@ impl From<TabXml> for TabStop {
 
 impl From<TabsXml> for Vec<TabStop> {
     fn from(x: TabsXml) -> Self {
-        // `<w:tab val="clear"/>` clears an inherited stop — we drop them.
-        // The clear semantics live in the style cascade (§17.7.2); no tab
-        // with `Clear` alignment should propagate to the rendering layer.
-        x.stops
-            .into_iter()
-            .filter(|t| !matches!(t.val, StTabJc::Clear))
-            .map(Into::into)
-            .collect()
+        // `<w:tab val="clear"/>` removes an inherited stop. We keep these in
+        // the model so the style cascade (§17.7.2) can apply them when
+        // merging a paragraph's tabs with its parent style's tabs. The
+        // layout build step (`render::layout::build::convert`) drops them
+        // before emitting layout tab stops.
+        x.stops.into_iter().map(Into::into).collect()
     }
 }
 
@@ -83,7 +81,11 @@ mod tests {
     }
 
     #[test]
-    fn clear_tabs_filtered_out() {
+    fn clear_tabs_preserved_for_style_cascade() {
+        // Clear entries must survive parsing so the style cascade can use
+        // them to remove inherited tabs at matching positions
+        // (`render::resolve::properties::merge_paragraph_properties`).
+        // The layout build step filters them out before rendering.
         let ts = parse(
             r#"<tabs>
                 <tab pos="1440" val="left"/>
@@ -91,9 +93,13 @@ mod tests {
                 <tab pos="4320" val="right"/>
             </tabs>"#,
         );
-        assert_eq!(ts.len(), 2);
+        assert_eq!(ts.len(), 3);
         assert_eq!(ts[0].position.raw(), 1440);
-        assert_eq!(ts[1].position.raw(), 4320);
+        assert_eq!(ts[0].alignment, TabAlignment::Left);
+        assert_eq!(ts[1].position.raw(), 2880);
+        assert_eq!(ts[1].alignment, TabAlignment::Clear);
+        assert_eq!(ts[2].position.raw(), 4320);
+        assert_eq!(ts[2].alignment, TabAlignment::Right);
     }
 
     #[test]
