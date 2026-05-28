@@ -3,6 +3,7 @@
 //! Takes measured blocks (paragraphs with fragments, tables with cells),
 //! fits them into pages respecting page size and margins, handles page breaks.
 
+mod floating_table;
 mod helpers;
 mod layout;
 mod stacker;
@@ -332,6 +333,310 @@ mod tests {
             "space_before should be preserved for pageBreakBefore: y={}",
             heading_y.raw(),
         );
+    }
+
+    // ── §17.4.59 — floating-table page overflow ────────────────────────
+    //
+    // A floating table (`<w:tbl>` with `<w:tblpPr>`) that is taller than
+    // the available height on its anchor page must split at row
+    // boundaries and continue on the next page. Word draws the
+    // continuation at the top of the next page's content area; the
+    // `tblpY` anchor applies only to the first slice.
+
+    fn cell_with_text(text: &str) -> TableCellInput {
+        TableCellInput {
+            blocks: vec![LayoutBlock::Paragraph {
+                fragments: vec![text_frag(text, 30.0, 14.0)],
+                style: ParagraphStyle::default(),
+                page_break_before: false,
+                footnotes: vec![],
+                floating_images: vec![],
+                floating_shapes: vec![],
+            }],
+            margins: PtEdgeInsets::ZERO,
+            grid_span: 1,
+            shading: None,
+            cell_borders: None,
+            vertical_merge: None,
+            vertical_align: crate::render::layout::table::CellVAlign::Top,
+        }
+    }
+
+    fn row_with_label(label: &str) -> TableRowInput {
+        TableRowInput {
+            cells: vec![cell_with_text(label)],
+            height_rule: None,
+            is_header: None,
+            cant_split: None,
+            grid_before: 0,
+            grid_after: 0,
+            border_overrides: None,
+        }
+    }
+
+    /// Build a floating table with `n` rows, anchored to the page at
+    /// `y_offset`. Used by overflow tests below.
+    fn floating_table_with_rows(n: usize, y_offset: f32) -> LayoutBlock {
+        LayoutBlock::Table {
+            rows: (0..n).map(|i| row_with_label(&format!("r{i}"))).collect(),
+            col_widths: vec![Pt::new(100.0)],
+            border_config: None,
+            indent: Pt::ZERO,
+            alignment: None,
+            float_info: Some(super::TableFloatInfo {
+                right_gap: Pt::ZERO,
+                bottom_gap: Pt::ZERO,
+                x_align: None,
+                y_offset: Pt::new(y_offset),
+                vert_anchor: crate::model::TableAnchor::Page,
+                overlap: None,
+            }),
+            style_id: None,
+        }
+    }
+
+    /// Collect text strings emitted on each page, in order.
+    fn texts_per_page(
+        pages: &[crate::render::layout::draw_command::LayoutedPage],
+    ) -> Vec<Vec<String>> {
+        pages
+            .iter()
+            .map(|p| {
+                p.commands
+                    .iter()
+                    .filter_map(|c| match c {
+                        DrawCommand::Text { text, .. } => Some(text.to_string()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// A floating table whose laid-out height exceeds the available
+    /// space on its anchor page must split at row boundaries. With the
+    /// 100pt-tall small_config and an anchor at y=15, 8 rows of ~14pt
+    /// (~112pt total) cannot fit in the 85pt below the anchor — at
+    /// least one row must spill to page 2.
+    #[test]
+    fn floating_table_splits_when_taller_than_anchor_page() {
+        let blocks = vec![floating_table_with_rows(8, 15.0)];
+        let pages = layout_section(
+            &blocks,
+            &small_config(),
+            None,
+            Pt::ZERO,
+            Pt::new(14.0),
+            None,
+        );
+        assert!(
+            pages.len() >= 2,
+            "overflowing floating table must paginate: got {} pages",
+            pages.len()
+        );
+
+        // The 8 row labels must appear collectively across pages.
+        let per_page = texts_per_page(&pages);
+        let all: Vec<&String> = per_page.iter().flatten().collect();
+        for i in 0..8 {
+            let needle = format!("r{i}");
+            assert!(
+                all.iter().any(|t| t.as_str() == needle),
+                "row {needle} missing from output entirely",
+            );
+        }
+    }
+
+    /// Rows in a paginated floating table do not duplicate: each row
+    /// appears on exactly one page. (This is what fails in the bug —
+    /// the current code emits every row on the anchor page, then
+    /// later content also lands on the anchor page, producing visual
+    /// overdraw.)
+    #[test]
+    fn floating_table_split_rows_do_not_overlap_across_pages() {
+        let blocks = vec![floating_table_with_rows(8, 15.0)];
+        let pages = layout_section(
+            &blocks,
+            &small_config(),
+            None,
+            Pt::ZERO,
+            Pt::new(14.0),
+            None,
+        );
+        let per_page = texts_per_page(&pages);
+        for i in 0..8 {
+            let needle = format!("r{i}");
+            let on_pages: Vec<usize> = per_page
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, page)| {
+                    if page.iter().any(|t| t == &needle) {
+                        Some(idx)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(
+                on_pages.len(),
+                1,
+                "row {needle} appeared on pages {on_pages:?}; floating-table rows must not be duplicated",
+            );
+        }
+    }
+
+    /// Build a floating table with `n` rows, anchored to the page at
+    /// `y_offset`, with an explicit `tblOverlap` value.
+    fn floating_table_with_rows_and_overlap(
+        n: usize,
+        y_offset: f32,
+        overlap: Option<crate::model::TableOverlap>,
+    ) -> LayoutBlock {
+        LayoutBlock::Table {
+            rows: (0..n).map(|i| row_with_label(&format!("r{i}"))).collect(),
+            col_widths: vec![Pt::new(100.0)],
+            border_config: None,
+            indent: Pt::ZERO,
+            alignment: None,
+            float_info: Some(super::TableFloatInfo {
+                right_gap: Pt::ZERO,
+                bottom_gap: Pt::ZERO,
+                x_align: None,
+                y_offset: Pt::new(y_offset),
+                vert_anchor: crate::model::TableAnchor::Page,
+                overlap,
+            }),
+            style_id: None,
+        }
+    }
+
+    /// §17.4.39: two floating tables both declaring `tblOverlap=Never`
+    /// must not draw at overlapping y-positions on the same page. The
+    /// second table either slides down past the first or spills to
+    /// the next page.
+    ///
+    /// Setup: page 100pt tall, both tables anchored to the same y=15.
+    /// First table (3 rows) fits at y=15; second table (3 rows) with
+    /// Never must NOT draw on top of the first.
+    #[test]
+    fn floating_tables_never_overlap_when_both_set_never() {
+        use crate::model::TableOverlap;
+        let blocks = vec![
+            floating_table_with_rows_and_overlap(3, 15.0, Some(TableOverlap::Never)),
+            floating_table_with_rows_and_overlap(3, 15.0, Some(TableOverlap::Never)),
+        ];
+        let pages = layout_section(
+            &blocks,
+            &small_config(),
+            None,
+            Pt::ZERO,
+            Pt::new(14.0),
+            None,
+        );
+
+        // Collect (page_idx, x, y, text) for all rows.
+        let mut row_positions: Vec<(usize, f32, f32, String)> = Vec::new();
+        for (pi, page) in pages.iter().enumerate() {
+            for cmd in &page.commands {
+                if let DrawCommand::Text { text, position, .. } = cmd {
+                    if text.starts_with('r') {
+                        row_positions.push((
+                            pi,
+                            position.x.raw(),
+                            position.y.raw(),
+                            text.to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+        // Group by page+x bucket; check no two row texts share the same y.
+        // (The bug emits both tables at y=15, so r0/r1/r2 from each table
+        // would land on identical y values.)
+        for i in 0..row_positions.len() {
+            for j in (i + 1)..row_positions.len() {
+                let (pi, xi, yi, ti) = &row_positions[i];
+                let (pj, xj, yj, tj) = &row_positions[j];
+                if pi == pj && (xi - xj).abs() < 1.0 && (yi - yj).abs() < 0.5 {
+                    panic!(
+                        "two row labels at same position on page {pi}: {ti:?} and {tj:?} both at y={yi}",
+                    );
+                }
+            }
+        }
+    }
+
+    /// §17.4.39 default behavior (overlap omitted) — overlap is
+    /// permitted. Two tables at the same anchor on the same page
+    /// DO draw at overlapping y-positions. This is intentional.
+    #[test]
+    fn floating_tables_overlap_by_default() {
+        let blocks = vec![
+            floating_table_with_rows_and_overlap(3, 15.0, None),
+            floating_table_with_rows_and_overlap(3, 15.0, None),
+        ];
+        let pages = layout_section(
+            &blocks,
+            &small_config(),
+            None,
+            Pt::ZERO,
+            Pt::new(14.0),
+            None,
+        );
+        // Both tables drawn on page 1; the test verifies that we
+        // don't accidentally shift when overlap is permitted.
+        assert!(!pages.is_empty());
+        let page1_rows: Vec<f32> = pages[0]
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                DrawCommand::Text { text, position, .. } if text.starts_with('r') => {
+                    Some(position.y.raw())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            page1_rows.len(),
+            6,
+            "with overlap permitted, both tables draw on page 1: got {} row entries",
+            page1_rows.len()
+        );
+    }
+
+    /// The continuation slice starts at the top content area on page 2
+    /// (margin.top), not at the original `tblpY` anchor. §17.4.59 only
+    /// anchors the first slice; the continuation flows at the top of
+    /// each subsequent page. Behavioral check: the first text on page
+    /// 2 must sit *higher* on the page than the first text on page 1
+    /// (lower y), because page 1 starts at the anchor (>= margin.top)
+    /// and page 2 starts at margin.top exactly.
+    #[test]
+    fn floating_table_continuation_anchors_at_top_margin() {
+        let blocks = vec![floating_table_with_rows(8, 15.0)];
+        let config = small_config();
+        let pages = layout_section(&blocks, &config, None, Pt::ZERO, Pt::new(14.0), None);
+        assert!(pages.len() >= 2, "test precondition: expected overflow");
+
+        let first_text_y =
+            |page: &crate::render::layout::draw_command::LayoutedPage| -> Option<f32> {
+                page.commands.iter().find_map(|c| match c {
+                    DrawCommand::Text { position, .. } => Some(position.y.raw()),
+                    _ => None,
+                })
+            };
+        let y_p1 = first_text_y(&pages[0]).expect("page 1 must contain table content");
+        let y_p2 = first_text_y(&pages[1]).expect("page 2 must contain table content");
+        let anchor_y = 15.0;
+        let margin_top = config.margins.top.raw();
+        // Anchor sits at y=15 (> margin.top=10), so the page-1 baseline
+        // is offset by 5pt versus page 2's continuation baseline.
+        assert!(
+            y_p2 < y_p1,
+            "continuation (page 2 first y={y_p2}) must start above the anchor (page 1 first y={y_p1}); anchor={anchor_y}, margin.top={margin_top}",
+        );
+        // Sanity: page 2 first text is within the content area.
+        assert!(y_p2 >= margin_top - 1.0);
     }
 
     // ── §17.3.1.24 paragraph border grouping tests ─────────────────────

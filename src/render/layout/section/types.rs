@@ -81,6 +81,12 @@ pub struct TableFloatInfo {
     pub y_offset: Pt,
     /// §17.4.58: vertical anchor reference (text / margin / page).
     pub vert_anchor: crate::model::TableAnchor,
+    /// §17.4.39 `<w:tblOverlap>` — when present and set to `Never`,
+    /// the layout shifts this table down past prior floating tables
+    /// on the same page rather than letting them overlap. `None` /
+    /// `Some(Overlap)` mean overlap is permitted (the §17.4.39
+    /// default).
+    pub overlap: Option<crate::model::TableOverlap>,
 }
 
 /// A floating (anchor) image to be positioned absolutely on the page.

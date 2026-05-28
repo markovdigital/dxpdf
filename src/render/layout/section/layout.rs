@@ -4,8 +4,12 @@ use super::super::draw_command::{DrawCommand, LayoutedPage};
 use super::super::float;
 use super::super::page::PageConfig;
 use super::super::paragraph::{layout_paragraph, ParagraphBorderStyle, ParagraphStyle};
-use super::super::table::{layout_table, TablePaginationConfig};
+use super::super::table::{layout_table, layout_table_paginated, TablePaginationConfig};
 use super::super::BoxConstraints;
+use super::floating_table::{
+    plan_floating_table_pages, resolve_floating_anchor, FloatingTableAnchor,
+    FloatingTablePagePlacement,
+};
 use super::helpers::{
     render_page_footnotes, split_at_column_breaks, split_at_page_breaks, table_x_offset,
 };
@@ -688,9 +692,14 @@ pub fn layout_section(
                 style_id,
             } => {
                 // §17.4.58: floating table — render and register as a float so
-                // subsequent text wraps around it.  Floating tables are absolutely
+                // subsequent text wraps around it. Floating tables are absolutely
                 // positioned and do not participate in adjacent border collapse.
                 if let Some(fi) = float_info {
+                    // Run an un-paginated layout once to get the table's
+                    // width (for x positioning + alignment overrides) and
+                    // total height (for the §17.4.59 page-push heuristic).
+                    // The actual emission uses `layout_table_paginated`
+                    // below so rows that overflow split across pages.
                     let table = layout_table(
                         rows,
                         col_widths,
@@ -709,9 +718,6 @@ pub fn layout_section(
                         content_width,
                         config.margins.left,
                     );
-
-                    // Floating table breaks the adjacent table chain.
-                    state.prev_table_style_id = None;
                     // §17.4.58: apply tblpXSpec horizontal alignment override.
                     let table_x = match fi.x_align {
                         Some(crate::model::TableXAlign::Center) => {
@@ -722,6 +728,12 @@ pub fn layout_section(
                         }
                         _ => table_x,
                     };
+
+                    // §17.4.59: anchor-page heuristic — if the cursor isn't
+                    // already at top of page and the table won't fit below
+                    // it, push the table to the next page before resolving
+                    // the anchor. This matches Word's "don't anchor on a
+                    // page that's already mostly full" behavior.
                     if state.cursor_y + table.size.height > state.bottom
                         && state.cursor_y > config.margins.top
                     {
@@ -729,47 +741,139 @@ pub fn layout_section(
                         state.prev_space_after = Pt::ZERO;
                     }
 
-                    // §17.4.59: tblpY is the absolute Y offset from the vertical
-                    // anchor. The table must not start before cursor_y.
-                    let float_y_start = if fi.y_offset > Pt::ZERO {
-                        let anchor_y = match fi.vert_anchor {
-                            crate::model::TableAnchor::Text => {
-                                state.last_para_start_y + fi.y_offset
-                            }
-                            crate::model::TableAnchor::Margin => config.margins.top + fi.y_offset,
-                            crate::model::TableAnchor::Page => fi.y_offset,
+                    // §17.4.59: resolve `tblpY` on the (possibly new)
+                    // current page, then §17.4.39 resolve collisions with
+                    // prior floats. On `Spillover`, push to next page and
+                    // re-resolve with the new (empty) float list.
+                    let float_y_start = loop {
+                        let requested_y = if fi.y_offset > Pt::ZERO {
+                            let anchor_y = match fi.vert_anchor {
+                                crate::model::TableAnchor::Text => {
+                                    state.last_para_start_y + fi.y_offset
+                                }
+                                crate::model::TableAnchor::Margin => {
+                                    config.margins.top + fi.y_offset
+                                }
+                                crate::model::TableAnchor::Page => fi.y_offset,
+                            };
+                            anchor_y.max(state.cursor_y)
+                        } else {
+                            state.cursor_y
                         };
-                        anchor_y.max(state.cursor_y)
-                    } else {
-                        state.cursor_y
+
+                        match resolve_floating_anchor(
+                            requested_y,
+                            table.size.height,
+                            fi.overlap,
+                            &state.page_floats,
+                            state.bottom,
+                        ) {
+                            FloatingTableAnchor::OnCurrentPage(y) => break y,
+                            FloatingTableAnchor::Shifted { from, to } => {
+                                log::debug!(
+                                    "[layout]   shift float past prior (overlap=Never): {:.1} -> {:.1}",
+                                    from.raw(),
+                                    to.raw(),
+                                );
+                                break to;
+                            }
+                            FloatingTableAnchor::Spillover => {
+                                log::debug!(
+                                    "[layout]   float spill to next page (overlap=Never): block_idx={block_idx}",
+                                );
+                                state.push_new_page(block_idx, &ctx);
+                                state.prev_space_after = Pt::ZERO;
+                                // Loop: re-resolve on the fresh page (empty
+                                // float list, cursor at margins.top).
+                            }
+                        }
                     };
-                    // §17.4.56: float y_end uses only the table's visual height.
-                    let float_y_end = float_y_start + table.size.height;
 
-                    for mut cmd in table.commands {
-                        cmd.shift_y(float_y_start);
-                        cmd.shift_x(table_x);
-                        state.current_page.commands.push(cmd);
-                    }
+                    // Floating table breaks the adjacent table chain.
+                    state.prev_table_style_id = None;
 
-                    log::debug!(
-                        "[layout]   register table float: x={:.1} y={:.1}-{:.1} w={:.1} block_idx={block_idx}",
-                        table_x.raw(), float_y_start.raw(), float_y_end.raw(),
-                        (table.size.width + fi.right_gap).raw()
-                    );
-                    // §17.4.56: register as float for text wrapping.
-                    state.page_floats.push(float::ActiveFloat {
-                        page_x: table_x,
-                        page_y_start: float_y_start,
-                        page_y_end: float_y_end,
-                        width: table.size.width + fi.right_gap,
-                        source: float::FloatSource::Table {
-                            owner_block_idx: block_idx,
+                    // §17.4.59: paginate at row boundaries when the table
+                    // would overflow. First slice gets the anchor page's
+                    // remaining height (`bottom - float_y_start`);
+                    // continuation slices get a full content-area height
+                    // (`bottom - margins.top`) since they start at the
+                    // top of subsequent pages.
+                    let available_first = (state.bottom - float_y_start).max(Pt::ZERO);
+                    let page_height = (state.bottom - config.margins.top).max(Pt::ZERO);
+                    let slices = layout_table_paginated(
+                        rows,
+                        col_widths,
+                        &col_constraints(state.current_col),
+                        ctx.default_line_height,
+                        border_config.as_ref(),
+                        ctx.measure_text,
+                        &TablePaginationConfig {
+                            available_height: available_first,
+                            page_height,
+                            suppress_first_row_top: false,
                         },
-                        // §17.4.58: floating tables default to bothSides;
-                        // no dedicated wrapText attribute exists for tables.
-                        wrap_text: float::WrapTextSide::BothSides,
-                    });
+                    );
+
+                    // §17.4.59: anchor only the first slice; continuation
+                    // slices flow at the top of subsequent pages. Encoded
+                    // by the `Anchor` / `Continuation` enum variants in
+                    // the placement plan.
+                    let plan = plan_floating_table_pages(slices, float_y_start, config.margins.top);
+
+                    let table_width = table.size.width;
+                    for (page_idx, placement) in plan.pages.into_iter().enumerate() {
+                        if page_idx > 0 {
+                            state.push_new_page(block_idx, &ctx);
+                            state.prev_space_after = Pt::ZERO;
+                        }
+
+                        let (y_start, slice, is_anchor) = match placement {
+                            FloatingTablePagePlacement::Anchor { y_start, slice } => {
+                                (y_start, slice, true)
+                            }
+                            FloatingTablePagePlacement::Continuation { y_start, slice } => {
+                                (y_start, slice, false)
+                            }
+                        };
+                        let slice_height = slice.size.height;
+
+                        for mut cmd in slice.commands {
+                            cmd.shift_y(y_start);
+                            cmd.shift_x(table_x);
+                            state.current_page.commands.push(cmd);
+                        }
+
+                        // §17.4.56 / §17.4.39: register every slice as a
+                        // float on its respective page. The anchor slice
+                        // drives text wrapping for body paragraphs that
+                        // follow; continuation slices are registered so
+                        // subsequent floating tables can see them during
+                        // collision resolution (§17.4.39 `tblOverlap`).
+                        log::debug!(
+                            "[layout]   register table float ({}): x={:.1} y={:.1}-{:.1} w={:.1} block_idx={block_idx}",
+                            if is_anchor { "anchor" } else { "continuation" },
+                            table_x.raw(),
+                            y_start.raw(),
+                            (y_start + slice_height).raw(),
+                            (table_width + fi.right_gap).raw(),
+                        );
+                        state.page_floats.push(float::ActiveFloat {
+                            page_x: table_x,
+                            page_y_start: y_start,
+                            page_y_end: y_start + slice_height,
+                            width: table_width + fi.right_gap,
+                            source: float::FloatSource::Table {
+                                owner_block_idx: block_idx,
+                            },
+                            // §17.4.58: floating tables default to
+                            // bothSides; no dedicated wrapText
+                            // attribute exists for tables.
+                            wrap_text: float::WrapTextSide::BothSides,
+                        });
+                        // Suppress unused warning when `is_anchor` is no
+                        // longer the discriminant for registration.
+                        let _ = is_anchor;
+                    }
                     continue;
                 }
 

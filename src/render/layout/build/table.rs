@@ -268,6 +268,9 @@ pub(super) fn build_table(
             y_offset: pos.y.map(Pt::from).unwrap_or(Pt::ZERO),
             // §17.4.58: default vertical anchor is "text".
             vert_anchor: pos.vert_anchor.unwrap_or(crate::model::TableAnchor::Text),
+            // §17.4.39: tblOverlap controls collision behavior with
+            // other floats on the same page.
+            overlap: t.properties.overlap,
         }
     });
 
