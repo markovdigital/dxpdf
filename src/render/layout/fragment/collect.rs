@@ -169,6 +169,137 @@ fn evaluate_field_instruction(
     }
 }
 
+/// §17.16.19 MERGEFORMAT — source of formatting for a complex field's
+/// substituted dynamic value. Resolved when the `Separate` fldChar is
+/// reached so the lookup honors the OOXML "first result run wins" rule
+/// regardless of how the inline-units pre-pass packaged the result zone:
+/// an empty `<w:t></w:t>` placeholder run carries `<w:rPr>` but does not
+/// surface as its own unit (segment joining drops it as 0 chars), yet
+/// is still the spec's first-result-run for formatting purposes.
+#[derive(Clone, Copy)]
+pub(super) enum FieldFormatSource<'a> {
+    /// First TextRun encountered between `Separate` and the matching
+    /// `End` at the outer field's nesting level. Its `<w:rPr>` provides
+    /// font family, size, bold, italic, color per §17.16.19.
+    FirstResultRun(&'a TextRun),
+    /// No result TextRun is present at the outer level. The
+    /// substitution falls back to paragraph default font properties at
+    /// emission time.
+    ParagraphDefaults,
+}
+
+/// Locate the formatting source for the complex field whose `Separate`
+/// fldChar sits at `inlines[separate_idx]`. Walks raw inlines (not
+/// unit-packaged), tracking nesting via `Begin` / `End` counts, and
+/// returns at the first top-level `TextRun` or at the matching `End`,
+/// whichever comes first.
+///
+/// "Top level" = the depth of the field whose `Separate` triggered the
+/// lookup. Text runs that sit inside a nested field's own result zone
+/// belong to that nested field's substitution and are skipped — they
+/// are not the outer field's first result run.
+///
+/// Malformed input (no matching `End`) returns `ParagraphDefaults`
+/// rather than panicking.
+pub(super) fn resolve_field_format_source(
+    inlines: &[Inline],
+    separate_idx: usize,
+) -> FieldFormatSource<'_> {
+    let mut depth: i32 = 0;
+    for inline in &inlines[separate_idx + 1..] {
+        match inline {
+            Inline::FieldChar(fc) => match fc.field_char_type {
+                FieldCharType::Begin => depth += 1,
+                FieldCharType::End => {
+                    if depth == 0 {
+                        return FieldFormatSource::ParagraphDefaults;
+                    }
+                    depth -= 1;
+                }
+                FieldCharType::Separate => {
+                    // Belongs to a nested field; the outer scan ignores it.
+                }
+            },
+            Inline::TextRun(tr) if depth == 0 => {
+                return FieldFormatSource::FirstResultRun(tr.as_ref());
+            }
+            _ => {}
+        }
+    }
+    FieldFormatSource::ParagraphDefaults
+}
+
+/// Emit the substituted text of a complex field using the formatting
+/// resolved at `Separate` (§17.16.19). When the source is
+/// [`FieldFormatSource::FirstResultRun`] the substitution inherits font
+/// family, size, bold, italic, color, etc. from that run's `<w:rPr>` —
+/// matching what Word renders when it updates a dynamic field in place.
+/// When no result run was present in the field zone the substitution
+/// falls back to paragraph defaults.
+#[allow(clippy::too_many_arguments)]
+fn emit_field_substitution<F>(
+    text: &str,
+    source: Option<&FieldFormatSource<'_>>,
+    default_family: &str,
+    default_size: Pt,
+    default_color: RgbColor,
+    resolved_styles: Option<
+        &std::collections::HashMap<
+            crate::model::StyleId,
+            crate::render::resolve::styles::ResolvedStyle,
+        >,
+    >,
+    paragraph_run_defaults: Option<&RunProperties>,
+    theme: Option<&crate::model::Theme>,
+    hyperlink_url: Option<&str>,
+    measure_text: &F,
+    measurer: Option<&crate::render::layout::measurer::TextMeasurer<'_>>,
+    fragments: &mut Vec<Fragment>,
+) where
+    F: Fn(&str, &FontProps) -> (Pt, TextMetrics),
+{
+    let (font, text_style) = match source {
+        Some(FieldFormatSource::FirstResultRun(tr)) => resolve_run_styling(
+            tr,
+            default_family,
+            default_size,
+            default_color,
+            resolved_styles,
+            paragraph_run_defaults,
+            theme,
+            measure_text,
+        ),
+        _ => (
+            FontProps {
+                family: Rc::from(default_family),
+                size: default_size,
+                bold: false,
+                italic: false,
+                underline: false,
+                char_spacing: Pt::ZERO,
+                text_scale: 1.0,
+                underline_position: Pt::ZERO,
+                underline_thickness: Pt::ZERO,
+            },
+            TextRunStyle {
+                color: default_color,
+                shading: None,
+                border: None,
+                baseline_offset: Pt::ZERO,
+            },
+        ),
+    };
+    emit_text_fragments(
+        text,
+        &font,
+        &text_style,
+        hyperlink_url,
+        measure_text,
+        measurer,
+        fragments,
+    );
+}
+
 /// Build a text fragment for a substituted field value, using the paragraph's
 /// default font properties.
 fn make_field_text_fragment<F>(
@@ -259,6 +390,24 @@ where
                                          // Emitted = substitution was rendered, skip remaining result TextRuns until End.
     let mut field_sub_pending: Option<String> = None;
     let mut field_sub_emitted = false;
+
+    // §17.16.19 MERGEFORMAT — pre-resolve formatting for each complex
+    // field's substitution against raw inlines, so empty placeholder
+    // result runs (`<w:t></w:t>` — swallowed by `build_inline_units`
+    // because they contribute 0 chars) still surface their `<w:rPr>`.
+    // One entry per `Separate` fldChar, consumed in order.
+    let field_format_sources: Vec<FieldFormatSource<'_>> = inlines
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, inl)| match inl {
+            Inline::FieldChar(fc) if matches!(fc.field_char_type, FieldCharType::Separate) => {
+                Some(resolve_field_format_source(inlines, idx))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut field_format_idx: usize = 0;
+    let mut current_field_format: Option<FieldFormatSource<'_>> = None;
     // Pre-pass: join consecutive text-only TextRuns into segments so
     // UAX #29 grapheme clusters reassemble across `<w:rFonts>`-induced
     // run splits (keycap `1️⃣`, ZWJ family, modifier sequence, …).
@@ -519,20 +668,40 @@ where
                             if let Ok(parsed) = crate::field::parse(&field_instr) {
                                 field_sub_pending = evaluate_field_instruction(&parsed, field_ctx);
                             }
+                            // §17.16.19: bind the formatting source resolved
+                            // against raw inlines, so the End fallback path
+                            // can recover an empty placeholder run's rPr
+                            // even though it was dropped by segment joining.
+                            current_field_format =
+                                field_format_sources.get(field_format_idx).copied();
+                            field_format_idx += 1;
                             field_depth -= 1; // now collect result runs (unless substituted)
                         }
                         FieldCharType::End => {
-                            // If a substitution was pending but no result TextRun
-                            // was present to provide formatting, emit with defaults.
+                            // Substitution still pending at End: the unit
+                            // stream never carried a result run (either the
+                            // placeholder was empty and got swallowed by
+                            // segment joining, or the field has no result
+                            // content at all). Use the pre-resolved format
+                            // source — §17.16.19 first-result-run when
+                            // present, paragraph defaults otherwise.
                             if let Some(text) = field_sub_pending.take() {
-                                fragments.push(make_field_text_fragment(
-                                    Rc::from(text.as_str()),
+                                emit_field_substitution(
+                                    &text,
+                                    current_field_format.as_ref(),
                                     default_family,
                                     default_size,
                                     default_color,
+                                    resolved_styles,
+                                    paragraph_run_defaults,
+                                    theme,
+                                    hyperlink_url,
                                     measure_text,
-                                ));
+                                    ctx.measurer,
+                                    &mut fragments,
+                                );
                             }
+                            current_field_format = None;
                             field_sub_emitted = false;
                         }
                     }
@@ -1167,5 +1336,239 @@ mod tests {
         if let Fragment::Text { text, .. } = &frags[2] {
             assert_eq!(&**text, "foo");
         }
+    }
+
+    // ── §17.16.19 MERGEFORMAT — field result format source ───────────────
+    //
+    // `resolve_field_format_source` walks raw inlines forward from a
+    // `Separate` fldChar to locate the formatting that should be applied
+    // to a substituted dynamic value (PAGE/NUMPAGES/...). Decoupling
+    // this from `build_inline_units` is the key correctness property:
+    // an empty `<w:t></w:t>` placeholder result run carries `<w:rPr>`
+    // but is swallowed by segment joining (it contributes 0 chars), so
+    // we cannot rely on units to surface it.
+
+    fn fld_char(kind: FieldCharType) -> Inline {
+        Inline::FieldChar(FieldChar {
+            field_char_type: kind,
+            dirty: None,
+            fld_lock: None,
+        })
+    }
+
+    fn bold_text_run(text: &str) -> Inline {
+        Inline::TextRun(Box::new(TextRun {
+            style_id: None,
+            properties: RunProperties {
+                bold: Some(true),
+                ..Default::default()
+            },
+            content: vec![RunElement::Text(text.into())],
+            rsids: RevisionIds::default(),
+        }))
+    }
+
+    /// Helper: pull `&TextRun` out of `FieldFormatSource::FirstResultRun`,
+    /// or panic with a descriptive message.
+    fn expect_first_run<'a>(src: FieldFormatSource<'a>) -> &'a TextRun {
+        match src {
+            FieldFormatSource::FirstResultRun(tr) => tr,
+            FieldFormatSource::ParagraphDefaults => {
+                panic!("expected FirstResultRun, got ParagraphDefaults")
+            }
+        }
+    }
+
+    /// Extract the concatenated text from a TextRun's content. Lets the
+    /// assertions read like prose without depending on `PartialEq` for
+    /// the `RunElement` ADT.
+    fn run_text(tr: &TextRun) -> String {
+        tr.content
+            .iter()
+            .filter_map(|e| match e {
+                RunElement::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Canonical complex field shape with a non-empty result run.
+    /// Inline layout: `[Begin, InstrText, Separate, TextRun("3"), End]`.
+    #[test]
+    fn format_source_finds_text_run_after_separate() {
+        let inlines = vec![
+            fld_char(FieldCharType::Begin),
+            Inline::InstrText("PAGE".into()),
+            fld_char(FieldCharType::Separate),
+            bold_text_run("3"),
+            fld_char(FieldCharType::End),
+        ];
+        let src = resolve_field_format_source(&inlines, 2);
+        let tr = expect_first_run(src);
+        assert_eq!(run_text(tr), "3");
+        assert_eq!(tr.properties.bold, Some(true));
+    }
+
+    /// The original bug: an empty `<w:t></w:t>` placeholder result run
+    /// must still be discoverable as the format source, because its
+    /// `<w:rPr>` is the only place the substitution can find its
+    /// formatting.
+    #[test]
+    fn format_source_finds_empty_placeholder_result_run() {
+        let inlines = vec![
+            fld_char(FieldCharType::Begin),
+            Inline::InstrText("PAGE".into()),
+            fld_char(FieldCharType::Separate),
+            bold_text_run(""), // empty placeholder, bold rPr
+            fld_char(FieldCharType::End),
+        ];
+        let src = resolve_field_format_source(&inlines, 2);
+        let tr = expect_first_run(src);
+        assert!(run_text(tr).is_empty(), "expected empty text content");
+        assert_eq!(
+            tr.properties.bold,
+            Some(true),
+            "empty placeholder's bold rPr must be reachable"
+        );
+    }
+
+    /// §17.16.19 — the FIRST result run wins when multiple are present.
+    #[test]
+    fn format_source_uses_first_when_multiple_result_runs() {
+        let inlines = vec![
+            fld_char(FieldCharType::Begin),
+            Inline::InstrText("PAGE".into()),
+            fld_char(FieldCharType::Separate),
+            bold_text_run("first"),
+            text_run("second"), // not bold
+            fld_char(FieldCharType::End),
+        ];
+        let src = resolve_field_format_source(&inlines, 2);
+        let tr = expect_first_run(src);
+        assert_eq!(run_text(tr), "first");
+        assert_eq!(tr.properties.bold, Some(true));
+    }
+
+    /// `Separate` immediately followed by `End` — no result run exists,
+    /// so the resolver returns `ParagraphDefaults` and the substitution
+    /// will fall back to paragraph defaults at emission time.
+    #[test]
+    fn format_source_returns_defaults_for_empty_result_zone() {
+        let inlines = vec![
+            fld_char(FieldCharType::Begin),
+            Inline::InstrText("PAGE".into()),
+            fld_char(FieldCharType::Separate),
+            fld_char(FieldCharType::End),
+        ];
+        let src = resolve_field_format_source(&inlines, 2);
+        assert!(matches!(src, FieldFormatSource::ParagraphDefaults));
+    }
+
+    /// Text runs inside a NESTED field's own result zone belong to that
+    /// nested field's substitution, not the outer one's. The outer
+    /// resolver must skip them and look for runs at its own nesting
+    /// level — here, `outer_run` after the nested End.
+    #[test]
+    fn format_source_skips_runs_inside_nested_field() {
+        let inlines = vec![
+            fld_char(FieldCharType::Begin), // outer
+            Inline::InstrText("OUTER".into()),
+            fld_char(FieldCharType::Separate), // index 2
+            // ── nested field at depth 1 ──
+            fld_char(FieldCharType::Begin),
+            Inline::InstrText("INNER".into()),
+            fld_char(FieldCharType::Separate),
+            bold_text_run("inner-result"), // inside nested zone — skip
+            fld_char(FieldCharType::End),
+            // ── back at outer's level ──
+            bold_text_run("outer-result"), // this is the one we want
+            fld_char(FieldCharType::End),
+        ];
+        let src = resolve_field_format_source(&inlines, 2);
+        let tr = expect_first_run(src);
+        assert_eq!(
+            run_text(tr),
+            "outer-result",
+            "must skip runs inside nested field"
+        );
+    }
+
+    /// Content past the matching `End` belongs to a later field (or to
+    /// the surrounding paragraph). The resolver stops at `End` and does
+    /// not leak formatting from outside.
+    #[test]
+    fn format_source_stops_at_matching_end() {
+        let inlines = vec![
+            fld_char(FieldCharType::Begin),
+            Inline::InstrText("PAGE".into()),
+            fld_char(FieldCharType::Separate), // index 2
+            fld_char(FieldCharType::End),
+            bold_text_run("trailing"), // outside the field — must not be picked up
+        ];
+        let src = resolve_field_format_source(&inlines, 2);
+        assert!(
+            matches!(src, FieldFormatSource::ParagraphDefaults),
+            "trailing run after End must not become the source"
+        );
+    }
+
+    /// Malformed inlines: no matching `End` after `Separate`. Treat as
+    /// "no result" rather than panicking or returning a partial result.
+    #[test]
+    fn format_source_handles_missing_end_gracefully() {
+        let inlines = vec![
+            fld_char(FieldCharType::Begin),
+            Inline::InstrText("PAGE".into()),
+            fld_char(FieldCharType::Separate), // index 2
+                                               // (no End — malformed)
+        ];
+        let src = resolve_field_format_source(&inlines, 2);
+        // No TextRun present and no End either — defaults is correct.
+        assert!(matches!(src, FieldFormatSource::ParagraphDefaults));
+    }
+
+    // ── End-to-end: empty-placeholder result run formatting ──────────────
+    //
+    // Mirrors the Fotodokumentation Test header structure:
+    //   `Seite ` [Begin → InstrText("PAGE") → Separate → <w:t></w:t> bold → End]
+    // The substituted page number must inherit bold from the empty
+    // placeholder result run's `<w:rPr>`.
+
+    #[test]
+    fn page_field_with_empty_placeholder_inherits_bold() {
+        let inlines = vec![
+            bold_text_run("Seite "),
+            fld_char(FieldCharType::Begin),
+            Inline::InstrText("PAGE".into()),
+            fld_char(FieldCharType::Separate),
+            bold_text_run(""), // placeholder result with bold rPr
+            fld_char(FieldCharType::End),
+        ];
+        let ctx = default_ctx(12.0);
+        let frags = collect_fragments(
+            &inlines,
+            &ctx,
+            None,
+            &dummy_measure,
+            &mut 0,
+            &mut 0,
+            FieldContext {
+                page_number: Some(7),
+                num_pages: None,
+            },
+        );
+        // Two visible text fragments: "Seite " and the substituted "7".
+        let texts: Vec<(&str, bool)> = frags
+            .iter()
+            .filter_map(|f| match f {
+                Fragment::Text { text, font, .. } => Some((text.as_ref(), font.bold)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            vec![("Seite ", true), ("7", true)],
+            "PAGE substitution must inherit bold from empty placeholder run"
+        );
     }
 }
