@@ -42,6 +42,10 @@ struct LinePlacement {
 /// `emit_line_commands`.
 struct LineLayoutParams {
     content_width: Pt,
+    /// The full constraint width (page/cell text area between margins), before
+    /// paragraph indents are subtracted. §17.3.1.30 position tabs measured
+    /// `relativeTo="margin"` reference this, not the indented `content_width`.
+    max_width: Pt,
     first_line_adjustment: Pt,
     drop_cap_indent: Pt,
     drop_cap_lines: usize,
@@ -114,6 +118,7 @@ pub fn layout_paragraph(
     // Each line stores its (float_left, float_right) adjustments for rendering.
     let params = LineLayoutParams {
         content_width,
+        max_width: constraints.max_width,
         first_line_adjustment,
         drop_cap_indent,
         drop_cap_lines,
@@ -226,7 +231,7 @@ pub fn layout_paragraph(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Alignment;
+    use crate::model::{Alignment, PTabAlignment, PTabRelativeTo};
     use crate::render::layout::fragment::{FontProps, TextMetrics};
     use crate::render::resolve::color::RgbColor;
     use std::rc::Rc;
@@ -526,5 +531,105 @@ mod tests {
             10.0,
             "minimum > natural"
         );
+    }
+
+    // ── Absolute position tabs (§17.3.1.30) ──
+
+    fn ptab_frag(align: PTabAlignment, relative_to: PTabRelativeTo) -> Fragment {
+        Fragment::PTab {
+            align,
+            relative_to,
+            leader: crate::model::TabLeader::None,
+            line_height: Pt::new(12.0),
+        }
+    }
+
+    /// Return the x positions of every emitted Text command, in order.
+    fn text_xs(result: &ParagraphLayout) -> Vec<f32> {
+        result
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                DrawCommand::Text { position, .. } => Some(position.x.raw()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ptab_three_region_header() {
+        // The canonical Word header: left ⟶ ptab(center) ⟶ center ⟶
+        // ptab(right) ⟶ right, all relative to the page margins.
+        let frags = vec![
+            text_frag("L", 10.0),
+            ptab_frag(PTabAlignment::Center, PTabRelativeTo::Margin),
+            text_frag("C", 20.0),
+            ptab_frag(PTabAlignment::Right, PTabRelativeTo::Margin),
+            text_frag("R", 30.0),
+        ];
+        let result = layout_paragraph(
+            &frags,
+            &body_constraints(100.0),
+            &ParagraphStyle::default(),
+            Pt::new(14.0),
+            None,
+        );
+
+        let xs = text_xs(&result);
+        assert_eq!(xs.len(), 3, "three text runs, no leaders");
+        assert_eq!(xs[0], 0.0, "left run at the left margin");
+        assert_eq!(xs[1], 40.0, "center run centered on 50 → 50 - 20/2");
+        assert_eq!(xs[2], 70.0, "right run ends at the right margin → 100 - 30");
+    }
+
+    #[test]
+    fn ptab_right_relative_to_indent() {
+        // relativeTo=indent uses [indent_left, content_width - indent_right].
+        let frags = vec![
+            text_frag("x", 10.0),
+            ptab_frag(PTabAlignment::Right, PTabRelativeTo::Indent),
+            text_frag("yy", 20.0),
+        ];
+        let style = ParagraphStyle {
+            indent_right: Pt::new(30.0),
+            ..Default::default()
+        };
+        let result = layout_paragraph(
+            &frags,
+            &body_constraints(100.0),
+            &style,
+            Pt::new(14.0),
+            None,
+        );
+
+        let xs = text_xs(&result);
+        // span_end = 100 - 30 = 70; right run of width 20 ends there → 50.
+        assert_eq!(xs[1], 50.0, "right run ends at the right indent");
+    }
+
+    #[test]
+    fn ptab_suppresses_paragraph_alignment() {
+        // A line with a ptab is positioned by the ptab, not by the paragraph's
+        // alignment (§17.3.1.37 rationale) — the left run stays at the margin.
+        let frags = vec![
+            text_frag("L", 10.0),
+            ptab_frag(PTabAlignment::Right, PTabRelativeTo::Margin),
+            text_frag("R", 30.0),
+        ];
+        let style = ParagraphStyle {
+            alignment: Alignment::End,
+            ..Default::default()
+        };
+        let result = layout_paragraph(
+            &frags,
+            &body_constraints(100.0),
+            &style,
+            Pt::new(14.0),
+            None,
+        );
+
+        let xs = text_xs(&result);
+        assert_eq!(xs[0], 0.0, "left run not shifted by End alignment");
+        assert_eq!(xs[1], 70.0, "right run ends at the right margin");
     }
 }

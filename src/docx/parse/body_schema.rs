@@ -19,7 +19,9 @@
 use serde::Deserialize;
 
 use crate::docx::dimension::{Dimension, Twips};
-use crate::docx::parse::primitives::st_enums::{StBrClear, StFldCharType};
+use crate::docx::parse::primitives::st_enums::{
+    StBrClear, StFldCharType, StPTabAlignment, StPTabLeader, StPTabRelativeTo,
+};
 use crate::docx::parse::properties::schema::paragraph::PPrXml;
 use crate::docx::parse::properties::schema::run::RPrXml;
 use crate::docx::parse::properties::schema::section::SectPrXml;
@@ -160,6 +162,8 @@ pub(crate) enum RunChildXml {
     DelText(TextXml),
     #[serde(rename = "tab")]
     Tab,
+    #[serde(rename = "ptab")]
+    PTab(PTabXml),
     #[serde(rename = "br")]
     Br(BrXml),
     #[serde(rename = "cr")]
@@ -223,6 +227,41 @@ pub(crate) enum StBrType {
     Page,
     Column,
     TextWrapping,
+}
+
+/// §17.3.1.30 `<w:ptab>` — absolute-position tab. All three attributes are
+/// required by the schema; we default leniently (left / indent / none) so a
+/// malformed run does not abort the whole parse.
+#[derive(Deserialize)]
+pub(crate) struct PTabXml {
+    #[serde(rename = "@alignment", default = "default_ptab_alignment")]
+    pub alignment: StPTabAlignment,
+    #[serde(rename = "@relativeTo", default = "default_ptab_relative_to")]
+    pub relative_to: StPTabRelativeTo,
+    #[serde(rename = "@leader", default = "default_ptab_leader")]
+    pub leader: StPTabLeader,
+}
+
+fn default_ptab_alignment() -> StPTabAlignment {
+    StPTabAlignment::Left
+}
+
+fn default_ptab_relative_to() -> StPTabRelativeTo {
+    StPTabRelativeTo::Indent
+}
+
+fn default_ptab_leader() -> StPTabLeader {
+    StPTabLeader::None
+}
+
+impl From<PTabXml> for crate::docx::model::PositionTab {
+    fn from(x: PTabXml) -> Self {
+        Self {
+            alignment: x.alignment.into(),
+            relative_to: x.relative_to.into(),
+            leader: x.leader.into(),
+        }
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -497,3 +536,54 @@ pub(crate) struct TableCellXml {
 // ── helpers ────────────────────────────────────────────────────────────────
 
 pub(crate) use crate::docx::parse::primitives::AttrBool;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::docx::model::{PTabAlignment, PTabLeader, PTabRelativeTo, PositionTab};
+
+    fn ptab(xml: &str) -> PositionTab {
+        let x: PTabXml = quick_xml::de::from_str(xml).unwrap();
+        x.into()
+    }
+
+    #[test]
+    fn ptab_center_margin() {
+        let p = ptab(r#"<ptab relativeTo="margin" alignment="center" leader="none"/>"#);
+        assert_eq!(p.alignment, PTabAlignment::Center);
+        assert_eq!(p.relative_to, PTabRelativeTo::Margin);
+        assert_eq!(p.leader, PTabLeader::None);
+    }
+
+    #[test]
+    fn ptab_right_margin_with_dot_leader() {
+        let p = ptab(r#"<ptab relativeTo="margin" alignment="right" leader="dot"/>"#);
+        assert_eq!(p.alignment, PTabAlignment::Right);
+        assert_eq!(p.relative_to, PTabRelativeTo::Margin);
+        assert_eq!(p.leader, PTabLeader::Dot);
+    }
+
+    #[test]
+    fn ptab_defaults_are_lenient() {
+        // All three attributes are required by the schema; a malformed run
+        // that omits them defaults to left / indent / none instead of failing.
+        let p = ptab(r#"<ptab/>"#);
+        assert_eq!(p.alignment, PTabAlignment::Left);
+        assert_eq!(p.relative_to, PTabRelativeTo::Indent);
+        assert_eq!(p.leader, PTabLeader::None);
+    }
+
+    #[test]
+    fn ptab_dispatches_as_run_child() {
+        // The whole reason for the fix: `<w:ptab>` must be a recognized run
+        // child, not an unknown-variant deserialize error.
+        let r: RunXml = quick_xml::de::from_str(
+            r#"<r><t>a</t><ptab relativeTo="margin" alignment="right" leader="none"/><t>b</t></r>"#,
+        )
+        .unwrap();
+        assert!(
+            r.content.iter().any(|c| matches!(c, RunChildXml::PTab(_))),
+            "run content should contain a PTab child"
+        );
+    }
+}

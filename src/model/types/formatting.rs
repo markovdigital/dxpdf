@@ -174,6 +174,62 @@ pub enum TabLeader {
     MiddleDot,
 }
 
+// ── Absolute position tabs (§17.3.1.30 w:ptab) ───────────────────────────────
+
+/// §17.3.1.30: an absolute-position tab (`<w:ptab>`). Unlike a regular tab
+/// (§17.3.3.29), it carries no `pos`; the position is derived from
+/// `relative_to` and `alignment` at layout time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PositionTab {
+    /// §17.18.59: how following content aligns to the derived position.
+    pub alignment: PTabAlignment,
+    /// §17.18.66: reference the position is measured against.
+    pub relative_to: PTabRelativeTo,
+    /// §17.18.60: leader character filling the gap.
+    pub leader: PTabLeader,
+}
+
+/// §17.18.59 ST_PTabAlignment — a strict subset of tab alignments (no
+/// decimal/bar/clear).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PTabAlignment {
+    Left,
+    Center,
+    Right,
+}
+
+/// §17.18.66 ST_PTabRelativeTo — the base the position is measured from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PTabRelativeTo {
+    /// Relative to the page text margins.
+    Margin,
+    /// Relative to the current paragraph indents.
+    Indent,
+}
+
+/// §17.18.60 ST_PTabLeader — leader characters for a position tab. A subset of
+/// [`TabLeader`] (no `heavy`); [`From`] lets layout reuse the tab-leader painter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PTabLeader {
+    None,
+    Dot,
+    Hyphen,
+    Underscore,
+    MiddleDot,
+}
+
+impl From<PTabLeader> for TabLeader {
+    fn from(l: PTabLeader) -> Self {
+        match l {
+            PTabLeader::None => Self::None,
+            PTabLeader::Dot => Self::Dot,
+            PTabLeader::Hyphen => Self::Hyphen,
+            PTabLeader::Underscore => Self::Underscore,
+            PTabLeader::MiddleDot => Self::MiddleDot,
+        }
+    }
+}
+
 // ── Conditional Formatting ───────────────────────────────────────────────────
 
 bitflags::bitflags! {

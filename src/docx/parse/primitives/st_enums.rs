@@ -18,9 +18,10 @@ use serde::Deserialize;
 
 use crate::docx::model::{
     Alignment, BorderStyle, BreakClear, CellVerticalAlign, FieldCharType, FrameWrap, HeightRule,
-    HighlightColor, NumberFormat, PageOrientation, SectionType, ShadingPattern, TabAlignment,
-    TabLeader, TableAnchor, TableLayout, TableOverlap, TableXAlign, TableYAlign, TextAlignment,
-    TextDirection, ThemeFontRef, UnderlineStyle, VerticalAlign,
+    HighlightColor, NumberFormat, PTabAlignment, PTabLeader, PTabRelativeTo, PageOrientation,
+    SectionType, ShadingPattern, TabAlignment, TabLeader, TableAnchor, TableLayout, TableOverlap,
+    TableXAlign, TableYAlign, TextAlignment, TextDirection, ThemeFontRef, UnderlineStyle,
+    VerticalAlign,
 };
 
 // ── StBorderType (§17.18.2) ───────────────────────────────────────────────
@@ -571,6 +572,68 @@ impl From<StTabTlc> for TabLeader {
             StTabTlc::Underscore => Self::Underscore,
             StTabTlc::Heavy => Self::Heavy,
             StTabTlc::MiddleDot => Self::MiddleDot,
+        }
+    }
+}
+
+// ── StPTabAlignment (§17.18.59 absolute position tab alignment) ────────────
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StPTabAlignment {
+    Left,
+    Center,
+    Right,
+}
+
+impl From<StPTabAlignment> for PTabAlignment {
+    fn from(s: StPTabAlignment) -> Self {
+        match s {
+            StPTabAlignment::Left => Self::Left,
+            StPTabAlignment::Center => Self::Center,
+            StPTabAlignment::Right => Self::Right,
+        }
+    }
+}
+
+// ── StPTabRelativeTo (§17.18.66 absolute position tab base) ────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StPTabRelativeTo {
+    Margin,
+    Indent,
+}
+
+impl From<StPTabRelativeTo> for PTabRelativeTo {
+    fn from(s: StPTabRelativeTo) -> Self {
+        match s {
+            StPTabRelativeTo::Margin => Self::Margin,
+            StPTabRelativeTo::Indent => Self::Indent,
+        }
+    }
+}
+
+// ── StPTabLeader (§17.18.60 absolute position tab leader) ──────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StPTabLeader {
+    None,
+    Dot,
+    Hyphen,
+    Underscore,
+    MiddleDot,
+}
+
+impl From<StPTabLeader> for PTabLeader {
+    fn from(s: StPTabLeader) -> Self {
+        match s {
+            StPTabLeader::None => Self::None,
+            StPTabLeader::Dot => Self::Dot,
+            StPTabLeader::Hyphen => Self::Hyphen,
+            StPTabLeader::Underscore => Self::Underscore,
+            StPTabLeader::MiddleDot => Self::MiddleDot,
         }
     }
 }
@@ -1210,5 +1273,77 @@ mod tests {
     #[test]
     fn vertical_jc_strict() {
         assert_bad::<StVerticalJc>("start");
+    }
+
+    // ── StPTabAlignment ──
+    #[test]
+    fn ptab_alignment_all_variants() {
+        assert_eq!(
+            de::<StPTabAlignment>("left").unwrap(),
+            StPTabAlignment::Left
+        );
+        assert_eq!(
+            de::<StPTabAlignment>("center").unwrap(),
+            StPTabAlignment::Center
+        );
+        assert_eq!(
+            de::<StPTabAlignment>("right").unwrap(),
+            StPTabAlignment::Right
+        );
+    }
+    #[test]
+    fn ptab_alignment_strict() {
+        assert_bad::<StPTabAlignment>("decimal");
+    }
+    #[test]
+    fn ptab_alignment_converts_to_model() {
+        let m: PTabAlignment = StPTabAlignment::Center.into();
+        assert_eq!(m, PTabAlignment::Center);
+    }
+
+    // ── StPTabRelativeTo ──
+    #[test]
+    fn ptab_relative_to_all_variants() {
+        assert_eq!(
+            de::<StPTabRelativeTo>("margin").unwrap(),
+            StPTabRelativeTo::Margin
+        );
+        assert_eq!(
+            de::<StPTabRelativeTo>("indent").unwrap(),
+            StPTabRelativeTo::Indent
+        );
+    }
+    #[test]
+    fn ptab_relative_to_strict() {
+        assert_bad::<StPTabRelativeTo>("page");
+    }
+
+    // ── StPTabLeader ──
+    #[test]
+    fn ptab_leader_all_variants() {
+        assert_eq!(de::<StPTabLeader>("none").unwrap(), StPTabLeader::None);
+        assert_eq!(de::<StPTabLeader>("dot").unwrap(), StPTabLeader::Dot);
+        assert_eq!(de::<StPTabLeader>("hyphen").unwrap(), StPTabLeader::Hyphen);
+        assert_eq!(
+            de::<StPTabLeader>("underscore").unwrap(),
+            StPTabLeader::Underscore
+        );
+        assert_eq!(
+            de::<StPTabLeader>("middleDot").unwrap(),
+            StPTabLeader::MiddleDot
+        );
+    }
+    #[test]
+    fn ptab_leader_strict() {
+        // `heavy` is a regular tab leader (§17.18.86) but not a ptab leader.
+        assert_bad::<StPTabLeader>("heavy");
+    }
+    #[test]
+    fn ptab_leader_converts_to_model() {
+        let m: PTabLeader = StPTabLeader::MiddleDot.into();
+        assert_eq!(m, PTabLeader::MiddleDot);
+        // …and the model leader maps onto the shared TabLeader painter enum.
+        let t: TabLeader = m.into();
+        assert_eq!(t, TabLeader::MiddleDot);
     }
 }

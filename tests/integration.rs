@@ -430,3 +430,65 @@ fn grid_before_offsets_each_row_first_cell() {
          column overlapped the left"
     );
 }
+
+/// §17.3.1.30 — a `<w:ptab>` must parse (it previously aborted the whole parse
+/// with an "unknown variant `ptab`" error) and lay content out by position.
+#[test]
+fn position_tab_parses_and_converts() {
+    let docx = simple_docx(
+        r#"<w:p>
+            <w:r><w:t>PtabLeft</w:t></w:r>
+            <w:r><w:ptab w:relativeTo="margin" w:alignment="center" w:leader="none"/></w:r>
+            <w:r><w:t>PtabCenter</w:t></w:r>
+            <w:r><w:ptab w:relativeTo="margin" w:alignment="right" w:leader="none"/></w:r>
+            <w:r><w:t>PtabRight</w:t></w:r>
+        </w:p>"#,
+    );
+
+    // The regression: this must not error at parse time.
+    let pdf = dxpdf::convert(&docx).expect("ptab document should convert");
+    assert!(pdf.len() > 4 && &pdf[..5] == b"%PDF-");
+}
+
+#[test]
+fn position_tab_lays_out_by_position() {
+    use dxpdf::render::layout::draw_command::DrawCommand;
+    let docx = simple_docx(
+        r#"<w:p>
+            <w:r><w:t>PtabLeft</w:t></w:r>
+            <w:r><w:ptab w:relativeTo="margin" w:alignment="center" w:leader="none"/></w:r>
+            <w:r><w:t>PtabCenter</w:t></w:r>
+            <w:r><w:ptab w:relativeTo="margin" w:alignment="right" w:leader="none"/></w:r>
+            <w:r><w:t>PtabRight</w:t></w:r>
+        </w:p>"#,
+    );
+
+    let document = dxpdf::docx::parse(&docx).expect("parse");
+    let (_, pages) = dxpdf::render::resolve_and_layout(&document);
+    let cmds: Vec<&DrawCommand> = pages.iter().flat_map(|p| p.commands.iter()).collect();
+    let x_of = |needle: &str| -> f32 {
+        cmds.iter()
+            .find_map(|c| match c {
+                DrawCommand::Text { position, text, .. } if text.as_ref() == needle => {
+                    Some(position.x.raw())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{needle} present"))
+    };
+
+    let (x_left, x_center, x_right) = (x_of("PtabLeft"), x_of("PtabCenter"), x_of("PtabRight"));
+    // The full pipeline offsets by the page's left margin, so the left run
+    // sits at that margin (not 0); the two ptabs then drive the following
+    // content strictly rightward across the page (center, then right).
+    assert!(
+        x_left < x_center && x_center < x_right,
+        "ptabs advance content across the page: {x_left} < {x_center} < {x_right}"
+    );
+    // The right-aligned ptab pushes its content far past center — well beyond
+    // where simple left-to-right flow (left + center widths) would land.
+    assert!(
+        x_right - x_center > 100.0,
+        "right ptab should right-align near the margin, got center={x_center} right={x_right}"
+    );
+}

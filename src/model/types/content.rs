@@ -28,6 +28,8 @@ pub enum Block {
 pub enum RunElement {
     Text(String),
     Tab,
+    /// §17.3.1.30: absolute-position tab (`<w:ptab>`).
+    PositionTab(super::formatting::PositionTab),
     LineBreak(BreakKind),
     ColumnBreak,
     PageBreak,

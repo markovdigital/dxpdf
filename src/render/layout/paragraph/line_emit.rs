@@ -175,10 +175,10 @@ pub(super) fn emit_line_commands(
         };
         let remaining = (line_available - line.width).max(Pt::ZERO);
         // §17.3.1.37: when a line contains tab characters, tab stops control
-        // horizontal positioning — paragraph alignment does not apply.
-        let line_has_tabs = fragments[line.start..line.end]
-            .iter()
-            .any(|f| matches!(f, Fragment::Tab { .. }));
+        // horizontal positioning — paragraph alignment does not apply. Absolute
+        // position tabs (§17.3.1.30) place content explicitly for the same
+        // reason, so they suppress paragraph alignment too.
+        let line_has_tabs = fragments[line.start..line.end].iter().any(is_tab_like);
         let align_offset = if line_has_tabs {
             Pt::ZERO
         } else {
@@ -388,10 +388,11 @@ pub(super) fn emit_line_commands(
                         use crate::model::TabAlignment;
                         // §17.3.1.37: for right/center tabs, compute the width
                         // of content in this tab's zone — from here to the next
-                        // Tab fragment or line end, whichever comes first.
+                        // tab (regular or position) or line end, whichever comes
+                        // first.
                         let zone_end = fragments[frag_idx + 1..line.end]
                             .iter()
-                            .position(|f| matches!(f, Fragment::Tab { .. }))
+                            .position(is_tab_like)
                             .map_or(line.end, |i| frag_idx + 1 + i);
                         match ts.alignment {
                             TabAlignment::Right => {
@@ -426,6 +427,58 @@ pub(super) fn emit_line_commands(
                             default_line_height,
                         );
                     }
+
+                    x = new_x;
+                }
+                Fragment::PTab {
+                    align,
+                    relative_to,
+                    leader,
+                    ..
+                } => {
+                    use crate::model::{PTabAlignment, PTabRelativeTo};
+                    // §17.3.1.30: an absolute-position tab has no explicit stop.
+                    // Its reference span is derived from `relative_to`. x=0 is
+                    // the constraint's left edge (the page/cell text margin);
+                    // `content_width` is already net of paragraph indents, so
+                    // the right indent edge sits at `indent_left + content_width`.
+                    let (span_start, span_end) = match relative_to {
+                        PTabRelativeTo::Margin => (Pt::ZERO, params.max_width),
+                        PTabRelativeTo::Indent => {
+                            (style.indent_left, style.indent_left + content_width)
+                        }
+                    };
+                    // The alignment picks the anchor within that span.
+                    let anchor = match align {
+                        PTabAlignment::Left => span_start,
+                        PTabAlignment::Center => (span_start + span_end) * 0.5,
+                        PTabAlignment::Right => span_end,
+                    };
+                    // Align the zone (this ptab up to the next tab / line end)
+                    // to the anchor, mirroring the right/center tab-stop math.
+                    let zone_end = fragments[frag_idx + 1..line.end]
+                        .iter()
+                        .position(is_tab_like)
+                        .map_or(line.end, |i| frag_idx + 1 + i);
+                    let zone_width: Pt = fragments[frag_idx + 1..zone_end]
+                        .iter()
+                        .map(|f| f.width())
+                        .sum();
+                    let new_x = match align {
+                        PTabAlignment::Left => anchor.max(x),
+                        PTabAlignment::Center => (anchor - zone_width * 0.5).max(x),
+                        PTabAlignment::Right => (anchor - zone_width).max(x),
+                    };
+
+                    emit_tab_leader(
+                        commands,
+                        *leader,
+                        x,
+                        new_x,
+                        *cursor_y + line.ascent,
+                        measure_text,
+                        default_line_height,
+                    );
 
                     x = new_x;
                 }
@@ -505,6 +558,13 @@ pub(super) fn split_oversized_fragments(
         }
     }
     result
+}
+
+/// True for fragments that place content by tab semantics — a regular tab
+/// stop (§17.3.1.37) or an absolute-position tab (§17.3.1.30). Both terminate
+/// a tab zone and suppress paragraph alignment for the line.
+fn is_tab_like(f: &Fragment) -> bool {
+    matches!(f, Fragment::Tab { .. } | Fragment::PTab { .. })
 }
 
 /// §17.3.1.37: find the next tab stop position greater than `current_x`.

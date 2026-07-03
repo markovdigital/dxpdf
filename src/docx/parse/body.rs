@@ -210,6 +210,7 @@ fn extend_from_run(r: RunXml, out: &mut Vec<Inline>, ctx: &mut ConvertCtx) {
                 acc.push(RunElement::Text(restore_whitespace_sentinels(&t.content)))
             }
             RunChildXml::Tab => acc.push(RunElement::Tab),
+            RunChildXml::PTab(p) => acc.push(RunElement::PositionTab(p.into())),
             RunChildXml::Br(br) => acc.push(run_break(br)),
             RunChildXml::Cr => acc.push(RunElement::LineBreak(BreakKind::TextWrapping)),
             RunChildXml::SoftHyphen => {} // optional hyphen — only visible if line breaks here; we don't hyphenate
