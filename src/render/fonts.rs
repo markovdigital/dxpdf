@@ -457,6 +457,21 @@ impl FontCache {
         bold: bool,
         italic: bool,
     ) -> &Font {
+        self.get_indexed(registry, font_family, font_size, bold, italic).1
+    }
+
+    /// Like [`get`](Self::get), but also returns the resolved `Font`'s stable
+    /// slot index. The index is a cheap integer identity for the (family, size,
+    /// weight, slant) tuple — higher-level caches (e.g. the measurer's width
+    /// memo) key on it to avoid re-hashing the family string per call.
+    pub fn get_indexed(
+        &mut self,
+        registry: &FontRegistry,
+        font_family: &str,
+        font_size: Pt,
+        bold: bool,
+        italic: bool,
+    ) -> (usize, &Font) {
         let style = match (bold, italic) {
             (true, true) => FontStyle::bold_italic(),
             (true, false) => FontStyle::bold(),
@@ -480,7 +495,7 @@ impl FontCache {
                 .then_some(last.idx)
         });
         if let Some(idx) = hit {
-            return &self.fonts[idx];
+            return (idx, &self.fonts[idx]);
         }
 
         // Slow path: case-folded hash lookup. The owned `FontKey` (with its
@@ -518,7 +533,7 @@ impl FontCache {
             slant,
             idx,
         });
-        &self.fonts[idx]
+        (idx, &self.fonts[idx])
     }
 }
 
