@@ -31,8 +31,8 @@ use crate::render::emoji::cluster::{self, EmojiPresentation, EmojiStructure, Inl
 ///   FieldChar, InstrText, BookmarkStart/End, FootnoteRef, EndnoteRef,
 ///   Symbol, Separator, AlternateContent, …).
 /// - Any `Inline::TextRun` whose `content` contains a `RunElement` other
-///   than `RunElement::Text` (Tab, LineBreak, PageBreak, ColumnBreak,
-///   LastRenderedPageBreak).
+///   than `RunElement::Text` (Tab, PositionTab, LineBreak, PageBreak,
+///   ColumnBreak, LastRenderedPageBreak).
 ///
 /// Both classes surface as `Discrete` so the existing dispatch in
 /// `collect_fragments` handles them unchanged.
