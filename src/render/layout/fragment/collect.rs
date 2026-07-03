@@ -577,6 +577,14 @@ where
                                         fitting_width: None,
                                     });
                                 }
+                                RunElement::PositionTab(ptab) => {
+                                    fragments.push(Fragment::PTab {
+                                        align: ptab.alignment,
+                                        relative_to: ptab.relative_to,
+                                        leader: ptab.leader.into(),
+                                        line_height: font.size,
+                                    });
+                                }
                                 RunElement::LineBreak(_) => {
                                     fragments.push(Fragment::LineBreak {
                                         line_height: font.size,
@@ -1084,6 +1092,42 @@ mod tests {
 
         assert_eq!(frags.len(), 1);
         assert!(matches!(frags[0], Fragment::Tab { .. }));
+    }
+
+    #[test]
+    fn position_tab_produces_ptab_fragment() {
+        use crate::model::{PTabAlignment, PTabLeader, PTabRelativeTo, PositionTab};
+        let inlines = vec![Inline::TextRun(Box::new(TextRun {
+            style_id: None,
+            properties: RunProperties::default(),
+            content: vec![RunElement::PositionTab(PositionTab {
+                alignment: PTabAlignment::Right,
+                relative_to: PTabRelativeTo::Margin,
+                leader: PTabLeader::Dot,
+            })],
+            rsids: RevisionIds::default(),
+        }))];
+        let ctx = default_ctx(12.0);
+        let frags = collect_fragments(
+            &inlines,
+            &ctx,
+            None,
+            &dummy_measure,
+            &mut 0,
+            &mut 0,
+            FieldContext::default(),
+        );
+
+        assert_eq!(frags.len(), 1);
+        assert!(matches!(
+            frags[0],
+            Fragment::PTab {
+                align: PTabAlignment::Right,
+                relative_to: PTabRelativeTo::Margin,
+                leader: crate::model::TabLeader::Dot,
+                ..
+            }
+        ));
     }
 
     #[test]

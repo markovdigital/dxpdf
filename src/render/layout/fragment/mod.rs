@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use crate::model::{RunProperties, UnderlineStyle};
+use crate::model::{PTabAlignment, PTabRelativeTo, RunProperties, TabLeader, UnderlineStyle};
 
 use crate::render::dimension::Pt;
 use crate::render::emoji::cluster::{EmojiPresentation, EmojiStructure};
@@ -161,6 +161,16 @@ pub enum Fragment {
         /// Override minimum width for line fitting (default: MIN_TAB_WIDTH).
         fitting_width: Option<Pt>,
     },
+    /// §17.3.1.30: absolute-position tab. Its resolved position depends on the
+    /// line's geometry (margins / indents) and following content, so — like
+    /// [`Fragment::Tab`] — it occupies only a nominal width during line
+    /// fitting and is placed during line emission.
+    PTab {
+        align: PTabAlignment,
+        relative_to: PTabRelativeTo,
+        leader: TabLeader,
+        line_height: Pt,
+    },
     LineBreak {
         line_height: Pt,
     },
@@ -183,6 +193,7 @@ impl Fragment {
             Fragment::Image { size, .. } => size.width,
             Fragment::Emoji { advance, .. } => *advance,
             Fragment::Tab { fitting_width, .. } => fitting_width.unwrap_or(MIN_TAB_WIDTH),
+            Fragment::PTab { .. } => MIN_TAB_WIDTH,
             Fragment::LineBreak { .. }
             | Fragment::ColumnBreak
             | Fragment::PageBreak { .. }
@@ -204,6 +215,7 @@ impl Fragment {
             Fragment::Image { size, .. } => size.height,
             Fragment::Emoji { line_metrics, .. } => line_metrics.height(),
             Fragment::Tab { line_height, .. }
+            | Fragment::PTab { line_height, .. }
             | Fragment::LineBreak { line_height }
             | Fragment::PageBreak { line_height } => *line_height,
             Fragment::ColumnBreak | Fragment::Bookmark { .. } => Pt::ZERO,
