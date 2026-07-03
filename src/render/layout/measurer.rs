@@ -1,14 +1,15 @@
 //! Text measurer — resolves text widths through a `FontRegistry`.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use skia_safe::Font;
 
 use crate::render::dimension::Pt;
 use crate::render::emoji::resolve::{EmojiFamily, EmojiResolver, EmojiTypeface, RegistryLookup};
 use crate::render::emoji::shape::shape_text;
-use crate::render::fonts::{self, FontRegistry, TypefaceEntry};
+use crate::render::fonts::{self, FontRegistry, TypefaceEntry, TypefaceId};
 
 use super::fragment::FontProps;
 
@@ -25,6 +26,17 @@ pub struct TextMeasurer<'r> {
     /// Per-render dedup set so we warn at most once per cluster about a
     /// missing color emoji typeface.
     warned_emoji: RefCell<HashSet<String>>,
+    /// Per-render cache of extracted typeface bytes for emoji measurement,
+    /// keyed by typeface id. `to_font_data()` copies the whole typeface
+    /// (~190 MB for Apple Color Emoji), so — mirroring the raster pipeline's
+    /// `font_bytes_for` — we extract once per typeface instead of once per
+    /// cluster. `None` records a typeface that refuses to expose bytes so the
+    /// failed extraction isn't retried per cluster.
+    emoji_font_bytes: RefCell<HashMap<TypefaceId, Option<Rc<Vec<u8>>>>>,
+    /// Per-render memo of GSUB-aware advances from `measure_with_typeface`,
+    /// keyed by (typeface id, size in raw-f32 bits, cluster text). Skips
+    /// re-parsing a rustybuzz `Face` and re-shaping identical clusters.
+    emoji_advance_cache: RefCell<HashMap<(TypefaceId, u32, String), Pt>>,
 }
 
 impl<'r> TextMeasurer<'r> {
@@ -34,6 +46,8 @@ impl<'r> TextMeasurer<'r> {
             font_cache: RefCell::new(fonts::FontCache::new()),
             emoji_resolver: EmojiResolver::new(RegistryLookup { registry }),
             warned_emoji: RefCell::new(HashSet::new()),
+            emoji_font_bytes: RefCell::new(HashMap::new()),
+            emoji_advance_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -161,16 +175,45 @@ impl<'r> TextMeasurer<'r> {
             leading: Pt::new(metrics.leading.max(0.0)),
         };
 
-        // Try the GSUB-aware advance first; fall back to the cmap-only
-        // path if the typeface bytes can't be extracted or shaped.
-        let advance = typeface
-            .typeface
-            .to_font_data()
-            .and_then(|(bytes, _)| shape_text(&bytes, text, f32::from(size)).ok())
+        let advance = self.emoji_advance(text, typeface, size, &font);
+        (advance, text_metrics)
+    }
+
+    /// GSUB-aware advance for `text` against `typeface` at `size`, memoized
+    /// per render. Both the extracted font bytes and the shaped advance are
+    /// cached: `to_font_data()` copies the whole typeface (~190 MB for Apple
+    /// Color Emoji) and `shape_text` re-parses it, so doing either once per
+    /// cluster dominated layout for emoji-heavy documents. Falls back to the
+    /// cmap-only `measure_str` advance when bytes can't be extracted or
+    /// shaping fails — the same best-effort policy the rasterizer uses.
+    fn emoji_advance(&self, text: &str, typeface: &TypefaceEntry, size: Pt, font: &Font) -> Pt {
+        let id = TypefaceId::from(&typeface.typeface);
+        let key = (id, f32::from(size).to_bits(), text.to_owned());
+        if let Some(&cached) = self.emoji_advance_cache.borrow().get(&key) {
+            return cached;
+        }
+
+        let advance = self
+            .emoji_font_bytes(id, typeface)
+            .and_then(|bytes| shape_text(&bytes, text, f32::from(size)).ok())
             .map(|run| run.total_advance)
             .unwrap_or_else(|| Pt::new(font.measure_str(text, None).0));
 
-        (advance, text_metrics)
+        self.emoji_advance_cache.borrow_mut().insert(key, advance);
+        advance
+    }
+
+    /// Extracted bytes for `typeface`, cached by id — mirrors the raster
+    /// pipeline's `font_bytes_for` so a ~190 MB emoji typeface is serialized
+    /// via `to_font_data()` at most once per render. A cached `None` marks a
+    /// typeface that exposes no bytes, so the failed probe isn't repeated.
+    fn emoji_font_bytes(&self, id: TypefaceId, typeface: &TypefaceEntry) -> Option<Rc<Vec<u8>>> {
+        if let Some(cached) = self.emoji_font_bytes.borrow().get(&id) {
+            return cached.clone();
+        }
+        let bytes = typeface.typeface.to_font_data().map(|(b, _)| Rc::new(b));
+        self.emoji_font_bytes.borrow_mut().insert(id, bytes.clone());
+        bytes
     }
 
     /// Log a warning once per cluster when no color emoji typeface is
