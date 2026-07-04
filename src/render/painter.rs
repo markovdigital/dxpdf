@@ -88,6 +88,20 @@ fn render_page(
     emoji_rasterizer: &mut EmojiRasterizer,
     blob_cache: &mut FxHashMap<usize, FxHashMap<Box<str>, TextBlob>>,
 ) {
+    // Reusable paints — built once per page instead of per draw command (a
+    // large doc emits 100k+). Each carries the fixed config for its purpose;
+    // only the fields that vary (color, stroke width) are set per command, so
+    // no state leaks between commands. `default_paint` is never mutated — it
+    // backs the image/emoji `draw_image_rect` calls.
+    let mut text_paint = Paint::default();
+    text_paint.set_anti_alias(true);
+    let mut stroke_paint = Paint::default();
+    stroke_paint.set_anti_alias(true);
+    stroke_paint.set_stroke(true);
+    let mut rect_paint = Paint::default();
+    rect_paint.set_anti_alias(false);
+    let default_paint = Paint::default();
+
     for cmd in &page.commands {
         match cmd {
             DrawCommand::Text {
@@ -128,9 +142,7 @@ fn render_page(
                     italic,
                     text_scale,
                 );
-                let mut paint = Paint::default();
-                paint.set_anti_alias(true);
-                paint.set_color4f(to_color4f(*color), None);
+                text_paint.set_color4f(to_color4f(*color), None);
 
                 if char_spacing.abs() > Pt::ZERO {
                     // §17.3.2.35 w:spacing — draw each character with
@@ -163,7 +175,7 @@ fn render_page(
                         } else {
                             font.measure_str(&*s, None).0
                         };
-                        canvas.draw_str(&*s, to_point(cursor), font, &paint);
+                        canvas.draw_str(&*s, to_point(cursor), font, &text_paint);
                         cursor.x += Pt::new(w) + *char_spacing;
                     }
                 } else if let Some(slot) = blob_slot {
@@ -173,35 +185,32 @@ fn render_page(
                     // the same default cmap+advance positioning draw_str does.
                     let inner = blob_cache.entry(slot).or_default();
                     if let Some(blob) = inner.get(&**text) {
-                        canvas.draw_text_blob(blob, to_point(*position), &paint);
+                        canvas.draw_text_blob(blob, to_point(*position), &text_paint);
                     } else if let Some(blob) = TextBlob::from_str(&**text, font) {
-                        canvas.draw_text_blob(&blob, to_point(*position), &paint);
+                        canvas.draw_text_blob(&blob, to_point(*position), &text_paint);
                         inner.insert(Box::from(&**text), blob);
                     }
                 } else {
-                    canvas.draw_str(text, to_point(*position), font, &paint);
+                    canvas.draw_str(text, to_point(*position), font, &text_paint);
                 }
             }
             DrawCommand::Underline { line, color, width }
             | DrawCommand::Line { line, color, width } => {
-                let mut paint = Paint::default();
-                paint.set_anti_alias(true);
-                paint.set_stroke(true);
-                paint.set_stroke_width(f32::from(*width));
-                paint.set_color4f(to_color4f(*color), None);
+                stroke_paint.set_stroke_width(f32::from(*width));
+                stroke_paint.set_color4f(to_color4f(*color), None);
 
                 let (start, end) = to_line(*line);
-                canvas.draw_line(start, end, &paint);
+                canvas.draw_line(start, end, &stroke_paint);
             }
             DrawCommand::Image { rect, image_data } => {
                 let ptr_key: *const [u8] = Rc::as_ptr(&image_data.data);
                 if let Some(image) = image_cache.get(&ptr_key) {
-                    canvas.draw_image_rect(image, None, to_rect(*rect), &Paint::default());
+                    canvas.draw_image_rect(image, None, to_rect(*rect), &default_paint);
                 } else {
                     let decoded = decode_image(image_data);
                     if let Some(image) = decoded {
                         let image = downsample_if_oversize(image, *rect);
-                        canvas.draw_image_rect(&image, None, to_rect(*rect), &Paint::default());
+                        canvas.draw_image_rect(&image, None, to_rect(*rect), &default_paint);
                         image_cache.insert(ptr_key, image);
                     } else {
                         let magic = &image_data.data[..image_data.data.len().min(4)];
@@ -244,14 +253,12 @@ fn render_page(
                     None,
                     to_rect(*rect),
                     sampling,
-                    &Paint::default(),
+                    &default_paint,
                 );
             }
             DrawCommand::Rect { rect, color } => {
-                let mut paint = Paint::default();
-                paint.set_anti_alias(false);
-                paint.set_color4f(to_color4f(*color), None);
-                canvas.draw_rect(to_rect(*rect), &paint);
+                rect_paint.set_color4f(to_color4f(*color), None);
+                canvas.draw_rect(to_rect(*rect), &rect_paint);
             }
             DrawCommand::LinkAnnotation { rect, url } => {
                 let mut url_bytes = url.as_bytes().to_vec();
