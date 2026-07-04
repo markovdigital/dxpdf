@@ -106,7 +106,7 @@ pub fn layout_paragraph(
     // cells get character-level line breaking.
     let min_avail = (content_width - first_line_adjustment).max(Pt::ZERO);
     let split_frags;
-    let fragments = if min_avail > Pt::ZERO {
+    let fragments: &[Fragment] = if min_avail > Pt::ZERO {
         split_frags = split_oversized_fragments(fragments, min_avail, measure_text);
         &split_frags
     } else {
