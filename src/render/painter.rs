@@ -3,9 +3,10 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use rustc_hash::FxHashMap;
 use skia_safe::{
     path_effect::PathEffect, pdf, BlurStyle, Color4f, Data, MaskFilter, Paint, Path, PathBuilder,
-    PathFillType,
+    PathFillType, TextBlob,
 };
 
 use crate::render::dimension::Pt;
@@ -53,6 +54,10 @@ pub fn render_to_pdf(
     // (footer 📞 etc.) are rasterized once and shared.
     let mut emoji_rasterizer = EmojiRasterizer::default();
 
+    // Position-independent glyph runs, cached per (font slot, text). draw_str
+    // rebuilds this run (text → glyph ids → advances) on every call; reusing a
+    // TextBlob skips that remap for words repeated across the document.
+    let mut blob_cache: FxHashMap<usize, FxHashMap<Box<str>, TextBlob>> = FxHashMap::default();
     for page in pages {
         let mut on_page = doc.begin_page(to_size(page.page_size), None);
         {
@@ -64,6 +69,7 @@ pub fn render_to_pdf(
                 &mut font_cache,
                 &mut image_cache,
                 &mut emoji_rasterizer,
+                &mut blob_cache,
             );
         }
         doc = on_page.end_page();
@@ -80,6 +86,7 @@ fn render_page(
     font_cache: &mut fonts::FontCache,
     image_cache: &mut HashMap<*const [u8], skia_safe::Image>,
     emoji_rasterizer: &mut EmojiRasterizer,
+    blob_cache: &mut FxHashMap<usize, FxHashMap<Box<str>, TextBlob>>,
 ) {
     for cmd in &page.commands {
         match cmd {
@@ -94,20 +101,24 @@ fn render_page(
                 color,
                 text_scale,
             } => {
-                let base_font = font_cache.get(registry, font_family, *font_size, *bold, *italic);
+                let (slot, base_font) =
+                    font_cache.get_indexed(registry, font_family, *font_size, *bold, *italic);
                 // §17.3.2.45: a non-1.0 scale is applied via Skia's scale_x —
                 // that scales glyph advances and horizontal glyph extent
                 // without touching the cached, shared Font. Cloning and
-                // mutating a fresh Font keeps the cache invariant intact.
+                // mutating a fresh Font keeps the cache invariant intact. A
+                // scaled font is a one-off clone whose glyphs differ, so it
+                // bypasses the (slot-keyed) blob cache.
                 let scaled_font;
-                let font: &skia_safe::Font = if (*text_scale - 1.0).abs() > f32::EPSILON {
-                    let mut f = base_font.clone();
-                    f.set_scale_x(*text_scale);
-                    scaled_font = f;
-                    &scaled_font
-                } else {
-                    base_font
-                };
+                let (font, blob_slot): (&skia_safe::Font, Option<usize>) =
+                    if (*text_scale - 1.0).abs() > f32::EPSILON {
+                        let mut f = base_font.clone();
+                        f.set_scale_x(*text_scale);
+                        scaled_font = f;
+                        (&scaled_font, None)
+                    } else {
+                        (base_font, Some(slot))
+                    };
                 log::trace!(
                     "[paint] '{}' → font='{}' size={:.1}pt bold={} italic={} scale={:.2}",
                     &text[..text.len().min(30)],
@@ -154,6 +165,18 @@ fn render_page(
                         };
                         canvas.draw_str(&*s, to_point(cursor), font, &paint);
                         cursor.x += Pt::new(w) + *char_spacing;
+                    }
+                } else if let Some(slot) = blob_slot {
+                    // Common path: reuse a cached, position-independent glyph
+                    // run instead of remapping text→glyphs on every draw_str.
+                    // Visually identical — a TextBlob built from the font uses
+                    // the same default cmap+advance positioning draw_str does.
+                    let inner = blob_cache.entry(slot).or_default();
+                    if let Some(blob) = inner.get(&**text) {
+                        canvas.draw_text_blob(blob, to_point(*position), &paint);
+                    } else if let Some(blob) = TextBlob::from_str(&**text, font) {
+                        canvas.draw_text_blob(&blob, to_point(*position), &paint);
+                        inner.insert(Box::from(&**text), blob);
                     }
                 } else {
                     canvas.draw_str(text, to_point(*position), font, &paint);
