@@ -108,7 +108,7 @@ pub struct TableBorderConfig {
 }
 
 /// A single table border line.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TableBorderLine {
     pub width: Pt,
     pub color: RgbColor,
