@@ -470,10 +470,7 @@ fn collect_table_rows(children: Vec<TableChildXml>) -> Vec<TableRowXml> {
             | TableChildXml::Del(rt)
             | TableChildXml::MoveFrom(rt)
             | TableChildXml::MoveTo(rt) => rows.extend(rt.rows),
-            TableChildXml::CustomXmlIns(cx)
-            | TableChildXml::CustomXmlDel(cx)
-            | TableChildXml::CustomXmlMoveFrom(cx)
-            | TableChildXml::CustomXmlMoveTo(cx) => {
+            TableChildXml::CustomXml(cx) => {
                 rows.extend(collect_table_rows(cx.children));
             }
             TableChildXml::BookmarkStart(_)
@@ -500,8 +497,7 @@ fn convert_table_row(r: TableRowXml, ctx: &mut ConvertCtx) -> TableRow {
     };
     let properties = r.tr_pr.map(TableRowProperties::from).unwrap_or_default();
     let property_exceptions = r.tbl_pr_ex.map(Into::into);
-    let cells = r
-        .cells
+    let cells = collect_row_cells(r.children)
         .into_iter()
         .map(|c| convert_table_cell(c, ctx))
         .collect();
@@ -511,6 +507,40 @@ fn convert_table_row(r: TableRowXml, ctx: &mut ConvertCtx) -> TableRow {
         rsids,
         property_exceptions,
     }
+}
+
+/// Walk a `<w:tr>`'s direct children and flatten out every `<w:tc>`,
+/// recursing through cell-level SDT (`<w:sdt>`) and custom-XML wrappers.
+/// Range markers, proofreading errors, permission ranges, and the
+/// `tblPrEx`/`trPr` duplicates produced by `$value` are dropped — they have
+/// no rendered effect at cell level. Document order is preserved. Mirrors
+/// `collect_table_rows` one level down.
+fn collect_row_cells(children: Vec<RowChildXml>) -> Vec<TableCellXml> {
+    let mut cells = Vec::with_capacity(children.len());
+    for child in children {
+        match child {
+            RowChildXml::Cell(c) => cells.push(*c),
+            RowChildXml::Sdt(s) => {
+                if let Some(content) = s.content {
+                    cells.extend(collect_row_cells(content.children));
+                }
+            }
+            RowChildXml::CustomXml(cx) => {
+                cells.extend(collect_row_cells(cx.children));
+            }
+            RowChildXml::BookmarkStart(_)
+            | RowChildXml::BookmarkEnd(_)
+            | RowChildXml::CommentRangeStart(_)
+            | RowChildXml::CommentRangeEnd(_)
+            | RowChildXml::ProofErr(_)
+            | RowChildXml::PermStart(_)
+            | RowChildXml::PermEnd(_)
+            | RowChildXml::TblPrEx(_)
+            | RowChildXml::TrPr(_)
+            | RowChildXml::Other => {}
+        }
+    }
+    cells
 }
 
 fn convert_table_cell(c: TableCellXml, ctx: &mut ConvertCtx) -> TableCell {
@@ -526,4 +556,72 @@ fn convert_table_cell(c: TableCellXml, ctx: &mut ConvertCtx) -> TableCell {
 
 fn hex_rsid(s: Option<&str>) -> Option<RevisionSaveId> {
     s.and_then(RevisionSaveId::from_hex)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: a `<w:tr>` whose `<w:tc>` cells are interleaved with
+    /// cell-level `<w:sdt>` (CT_SdtCell) wrappers must (a) parse — the old
+    /// `Vec<TableCellXml>` field reported a duplicate `tc` when cells were
+    /// non-contiguous — and (b) recover every cell, including the ones nested
+    /// inside `<w:sdtContent>`.
+    #[test]
+    fn row_with_interspersed_sdt_cells_recovers_all_cells() {
+        let xml = r#"
+            <w:tr xmlns:w="x">
+              <w:trPr/>
+              <w:tc><w:p/></w:tc>
+              <w:tc><w:p/></w:tc>
+              <w:sdt>
+                <w:sdtPr/>
+                <w:sdtContent><w:tc><w:p/></w:tc></w:sdtContent>
+              </w:sdt>
+              <w:sdt>
+                <w:sdtContent><w:tc><w:p/></w:tc></w:sdtContent>
+              </w:sdt>
+              <w:tc><w:p/></w:tc>
+            </w:tr>
+        "#;
+        let row: TableRowXml = quick_xml::de::from_str(xml).expect("row must parse");
+        assert!(row.tr_pr.is_some(), "trPr still captured on the parent");
+        let cells = collect_row_cells(row.children);
+        assert_eq!(cells.len(), 5, "3 bare + 2 sdt-wrapped cells recovered");
+    }
+
+    /// Nested `<w:customXml>` cell wrapper (CT_CustomXmlCell) also flattens.
+    #[test]
+    fn row_with_custom_xml_cell_wrapper_recovers_cells() {
+        let xml = r#"
+            <w:tr xmlns:w="x">
+              <w:tc><w:p/></w:tc>
+              <w:customXml>
+                <w:tc><w:p/></w:tc>
+                <w:tc><w:p/></w:tc>
+              </w:customXml>
+            </w:tr>
+        "#;
+        let row: TableRowXml = quick_xml::de::from_str(xml).expect("row must parse");
+        assert_eq!(collect_row_cells(row.children).len(), 3);
+    }
+
+    /// A `<w:customXml>` row wrapper (CT_CustomXmlRow) inside `<w:tbl>` must
+    /// have its nested `<w:tr>` rows recovered — the element is `customXml`,
+    /// not `customXmlIns`/etc., so the wrong rename previously dropped them.
+    #[test]
+    fn table_with_custom_xml_row_wrapper_recovers_rows() {
+        let xml = r#"
+            <w:tbl xmlns:w="x">
+              <w:tblPr/>
+              <w:tblGrid><w:gridCol w:w="100"/></w:tblGrid>
+              <w:tr><w:tc><w:p/></w:tc></w:tr>
+              <w:customXml>
+                <w:tr><w:tc><w:p/></w:tc></w:tr>
+              </w:customXml>
+            </w:tbl>
+        "#;
+        let tbl: TableXml = quick_xml::de::from_str(xml).expect("table must parse");
+        assert_eq!(collect_table_rows(tbl.children).len(), 2);
+    }
 }

@@ -388,9 +388,9 @@ pub(crate) struct TableXml {
 /// Direct children of `<w:tbl>` modelled per ECMA-376 §17.4.38 (CT_Tbl).
 ///
 /// After `<w:tblPr>` and `<w:tblGrid>`, OOXML's content model is a
-/// `<xsd:choice>` repeated 0..*: `<w:tr>`, `<w:customXmlIns|Del|MoveFrom|
-/// MoveTo>` (CT_CustomXmlRow), `<w:sdt>` (CT_SdtRow), or EG_RunLevelElts
-/// (proofErr/permStart/permEnd; ins/del/moveFrom/moveTo as
+/// `<xsd:choice>` repeated 0..* (`EG_ContentRowContent`): `<w:tr>`,
+/// `<w:customXml>` (CT_CustomXmlRow), `<w:sdt>` (CT_SdtRow), or
+/// EG_RunLevelElts (proofErr/permStart/permEnd; ins/del/moveFrom/moveTo as
 /// CT_RowTrackChange; EG_RangeMarkupElements: bookmarkStart/End,
 /// commentRange*; EG_MathContent). Modelling every spec-defined variant
 /// lets row extraction recurse into wrappers; non-row variants are dropped
@@ -414,15 +414,9 @@ pub(crate) enum TableChildXml {
     MoveFrom(Box<RowTrackChangeXml>),
     #[serde(rename = "moveTo")]
     MoveTo(Box<RowTrackChangeXml>),
-    /// `<w:customXmlIns|Del|MoveFrom|MoveTo>` — CT_CustomXmlRow wrappers.
-    #[serde(rename = "customXmlIns")]
-    CustomXmlIns(Box<CustomXmlRowXml>),
-    #[serde(rename = "customXmlDel")]
-    CustomXmlDel(Box<CustomXmlRowXml>),
-    #[serde(rename = "customXmlMoveFrom")]
-    CustomXmlMoveFrom(Box<CustomXmlRowXml>),
-    #[serde(rename = "customXmlMoveTo")]
-    CustomXmlMoveTo(Box<CustomXmlRowXml>),
+    /// `<w:customXml>` — row-level custom-XML wrapper (CT_CustomXmlRow).
+    #[serde(rename = "customXml")]
+    CustomXml(Box<CustomXmlRowXml>),
     /// Range markup — bookmarks and comment ranges may span multiple rows.
     #[serde(rename = "bookmarkStart")]
     BookmarkStart(BookmarkStartXml),
@@ -516,13 +510,94 @@ pub(crate) struct TableRowXml {
 
     /// §17.4.61 `<w:tblPrEx>` — per-row exceptions to table-level
     /// properties. Spec mandates that when present, it appears *before*
-    /// `<w:trPr>` inside `<w:tr>`.
+    /// `<w:trPr>` inside `<w:tr>`. Also absorbed by `$value` below (via
+    /// `RowChildXml::TblPrEx`); this dedicated field is canonical.
     #[serde(rename = "tblPrEx", default)]
     pub tbl_pr_ex: Option<TblPrExXml>,
     #[serde(rename = "trPr", default)]
     pub tr_pr: Option<TrPrXml>,
-    #[serde(rename = "tc", default)]
-    pub cells: Vec<TableCellXml>,
+    /// All direct children of `<w:tr>` in document order. `<w:tc>` cells may
+    /// be interleaved with `<w:sdt>` / `<w:customXml>` wrappers (each of
+    /// which nests further cells), so — like `<w:tbl>` — the row cannot use a
+    /// plain `Vec<TableCellXml>`: `quick_xml` reports a duplicate `tc` field
+    /// when cells are non-contiguous. Cells are flattened out during
+    /// conversion by `collect_row_cells`.
+    #[serde(rename = "$value", default)]
+    pub children: Vec<RowChildXml>,
+}
+
+/// Direct children of `<w:tr>` modelled per ECMA-376 §17.4 (CT_Row).
+///
+/// After `<w:tblPrEx>` and `<w:trPr>`, the content model is the
+/// `EG_ContentCellContent` group repeated 0..*: `<w:tc>` (CT_Tc),
+/// `<w:customXml>` (CT_CustomXmlCell), `<w:sdt>` (CT_SdtCell), or
+/// EG_RunLevelElts (proofErr/permStart/permEnd) and EG_RangeMarkupElements
+/// (bookmarkStart/End, commentRange*). The wrappers nest further cells;
+/// non-cell variants are dropped during conversion since they have no
+/// rendered effect at row level. Mirrors `TableChildXml`.
+#[derive(Deserialize)]
+pub(crate) enum RowChildXml {
+    /// `<w:tc>` — a table cell.
+    #[serde(rename = "tc")]
+    Cell(Box<TableCellXml>),
+    /// `<w:sdt>` — cell-level structured document tag (CT_SdtCell).
+    #[serde(rename = "sdt")]
+    Sdt(Box<SdtCellXml>),
+    /// `<w:customXml>` — cell-level custom-XML wrapper (CT_CustomXmlCell).
+    #[serde(rename = "customXml")]
+    CustomXml(Box<CustomXmlCellXml>),
+    /// Range markup — bookmarks and comment ranges may span multiple cells.
+    #[serde(rename = "bookmarkStart")]
+    BookmarkStart(BookmarkStartXml),
+    #[serde(rename = "bookmarkEnd")]
+    BookmarkEnd(BookmarkEndXml),
+    #[serde(rename = "commentRangeStart")]
+    CommentRangeStart(BookmarkEndXml),
+    #[serde(rename = "commentRangeEnd")]
+    CommentRangeEnd(BookmarkEndXml),
+    /// Proofreading and permission markers — ignored.
+    #[serde(rename = "proofErr")]
+    ProofErr(IgnoredXml),
+    #[serde(rename = "permStart")]
+    PermStart(IgnoredXml),
+    #[serde(rename = "permEnd")]
+    PermEnd(IgnoredXml),
+    /// `<w:tblPrEx>` / `<w:trPr>` are captured on the parent directly; these
+    /// variants exist only so `$value` can absorb the duplicate match.
+    /// Compare with `TableChildXml::TblPr`.
+    #[serde(rename = "tblPrEx")]
+    TblPrEx(Box<TblPrExXml>),
+    #[serde(rename = "trPr")]
+    TrPr(Box<TrPrXml>),
+    /// Catch-all for unmodelled OOXML elements (e.g., math content).
+    #[serde(other)]
+    Other,
+}
+
+/// CT_SdtCell §17.5.2 — `<w:sdt>` at cell level. Wrapped cells live in
+/// `<w:sdtContent>` (CT_SdtContentCell); the cell-level analogue of
+/// `SdtRowXml`.
+#[derive(Deserialize, Default)]
+pub(crate) struct SdtCellXml {
+    #[serde(rename = "sdtContent", default)]
+    pub content: Option<SdtCellContentXml>,
+}
+
+#[derive(Deserialize, Default)]
+pub(crate) struct SdtCellContentXml {
+    #[serde(rename = "$value", default)]
+    pub children: Vec<RowChildXml>,
+}
+
+/// CT_CustomXmlCell §17.5.1 — recursive wrapper whose content model
+/// mirrors CT_Row's cell-level choice group, hence `Vec<RowChildXml>`; the
+/// cell-level analogue of `CustomXmlRowXml`.
+#[derive(Deserialize, Default)]
+pub(crate) struct CustomXmlCellXml {
+    #[serde(rename = "customXmlPr", default)]
+    pub custom_xml_pr: Option<IgnoredXml>,
+    #[serde(rename = "$value", default)]
+    pub children: Vec<RowChildXml>,
 }
 
 #[derive(Deserialize, Default)]
