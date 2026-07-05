@@ -201,17 +201,20 @@ pub(super) fn emit_text_words<F>(
     if text.is_empty() {
         return;
     }
+    // Words within a run share their font properties: build one `Rc` per call
+    // and hand each fragment a cheap refcount bump instead of a ~48-byte copy.
+    let font = Rc::new(font.clone());
     for word in split_into_words(text) {
-        let (w, m) = measure_text(word, font);
+        let (w, m) = measure_text(word, &font);
         let trimmed = word.trim_end();
         let tw = if trimmed.len() < word.len() {
-            measure_text(trimmed, font).0
+            measure_text(trimmed, &font).0
         } else {
             w
         };
         fragments.push(Fragment::Text {
             text: Rc::from(word),
-            font: font.clone(),
+            font: Rc::clone(&font),
             color: style.color,
             shading: style.shading,
             border: style.border,

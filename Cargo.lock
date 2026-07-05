@@ -556,6 +556,7 @@ dependencies = [
  "lopdf",
  "pyo3",
  "quick-xml",
+ "rustc-hash",
  "rustybuzz",
  "serde",
  "skia-safe",

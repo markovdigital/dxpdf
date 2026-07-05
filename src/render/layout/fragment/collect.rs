@@ -326,7 +326,7 @@ where
     let (w, m) = measure_text(&text, &font);
     Fragment::Text {
         text,
-        font,
+        font: Rc::new(font),
         color: default_color,
         shading: None,
         border: None,
@@ -766,7 +766,7 @@ where
                     let (w, m) = measure_text(&text, &font);
                     fragments.push(Fragment::Text {
                         text: Rc::from(text.as_str()),
-                        font,
+                        font: Rc::new(font),
                         color: RgbColor::BLACK,
                         shading: None,
                         border: None,
@@ -810,7 +810,7 @@ where
                     let baseline_offset = -(default_size * 0.4);
                     fragments.push(Fragment::Text {
                         text: Rc::from(num_text.as_str()),
-                        font: ref_font,
+                        font: Rc::new(ref_font),
                         color: default_color,
                         shading: None,
                         border: None,
@@ -842,7 +842,7 @@ where
                     let baseline_offset = -(default_size * 0.4);
                     fragments.push(Fragment::Text {
                         text: Rc::from(num_text.as_str()),
-                        font: ref_font,
+                        font: Rc::new(ref_font),
                         color: default_color,
                         shading: None,
                         border: None,

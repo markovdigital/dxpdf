@@ -412,8 +412,25 @@ struct FontKey {
     slant: skia_safe::font_style::Slant,
 }
 
+/// Raw (un-folded) inputs of the most recent [`FontCache::get`] call plus the
+/// slot its result lives in. Words within a run share one `FontProps`, so
+/// consecutive calls usually match this exactly and skip the `to_lowercase`
+/// allocation and the hash lookup entirely.
+struct LastCall {
+    family: String,
+    size_bits: u32,
+    weight: i32,
+    slant: skia_safe::font_style::Slant,
+    idx: usize,
+}
+
 /// Per-component cache of fully-configured `Font` objects, avoiding repeated
 /// `FontRegistry::resolve` lookups and `Font::from_typeface` construction.
+///
+/// `fonts` owns the resolved `Font`s (append-only, so slot indices stay
+/// stable); `index` maps a case-folded [`FontKey`] to a slot; `last` is a
+/// one-entry fast path keyed on the raw inputs of the previous call, so the
+/// common per-word case costs no allocation and no hashing.
 ///
 /// Must be discarded if the underlying `FontRegistry` is mutated (e.g. by
 /// `replace_typeface_by_id`). The render pipeline already creates a fresh
@@ -421,7 +438,9 @@ struct FontKey {
 /// between; no stale Font objects can survive.
 #[derive(Default)]
 pub struct FontCache {
-    cache: HashMap<FontKey, Font>,
+    fonts: Vec<Font>,
+    index: HashMap<FontKey, usize>,
+    last: Option<LastCall>,
 }
 
 impl FontCache {
@@ -438,31 +457,84 @@ impl FontCache {
         bold: bool,
         italic: bool,
     ) -> &Font {
+        self.get_indexed(registry, font_family, font_size, bold, italic)
+            .1
+    }
+
+    /// Like [`get`](Self::get), but also returns the resolved `Font`'s stable
+    /// slot index. The index is a cheap integer identity for the (family, size,
+    /// weight, slant) tuple — higher-level caches (e.g. the measurer's width
+    /// memo) key on it to avoid re-hashing the family string per call.
+    pub fn get_indexed(
+        &mut self,
+        registry: &FontRegistry,
+        font_family: &str,
+        font_size: Pt,
+        bold: bool,
+        italic: bool,
+    ) -> (usize, &Font) {
         let style = match (bold, italic) {
             (true, true) => FontStyle::bold_italic(),
             (true, false) => FontStyle::bold(),
             (false, true) => FontStyle::italic(),
             (false, false) => FontStyle::normal(),
         };
+        let size_bits = f32::from(font_size).to_bits();
+        let weight = *style.weight();
+        let slant = style.slant();
+
+        // Fast path: identical inputs to the previous call. Exact string
+        // comparison keeps this behaviour-identical to the case-folded slow
+        // path (a hit resolves to the same `Font`), while avoiding the
+        // per-call `to_lowercase` allocation and hash probe. `idx` is copied
+        // out so the `last` borrow ends before `fonts` is indexed.
+        let hit = self.last.as_ref().and_then(|last| {
+            (last.size_bits == size_bits
+                && last.weight == weight
+                && last.slant == slant
+                && last.family == font_family)
+                .then_some(last.idx)
+        });
+        if let Some(idx) = hit {
+            return (idx, &self.fonts[idx]);
+        }
+
+        // Slow path: case-folded hash lookup. The owned `FontKey` (with its
+        // lowercased `String`) is built only here — at most once per distinct
+        // (family, size, style), not once per call.
         let key = FontKey {
             family: font_family.to_lowercase(),
-            size_bits: f32::from(font_size).to_bits(),
-            weight: *style.weight(),
-            slant: style.slant(),
+            size_bits,
+            weight,
+            slant,
         };
-        self.cache.entry(key).or_insert_with_key(|k| {
-            let style = FontStyle::new(
-                skia_safe::font_style::Weight::from(k.weight),
-                skia_safe::font_style::Width::NORMAL,
-                k.slant,
-            );
-            let entry = registry.resolve(font_family, style);
-            let mut font = Font::from_typeface(entry.typeface, f32::from(font_size));
-            font.set_subpixel(true);
-            font.set_linear_metrics(true);
-            font.set_hinting(skia_safe::FontHinting::None);
-            font
-        })
+        let idx = match self.index.get(&key) {
+            Some(&i) => i,
+            None => {
+                let resolve_style = FontStyle::new(
+                    skia_safe::font_style::Weight::from(weight),
+                    skia_safe::font_style::Width::NORMAL,
+                    slant,
+                );
+                let entry = registry.resolve(font_family, resolve_style);
+                let mut font = Font::from_typeface(entry.typeface, f32::from(font_size));
+                font.set_subpixel(true);
+                font.set_linear_metrics(true);
+                font.set_hinting(skia_safe::FontHinting::None);
+                let i = self.fonts.len();
+                self.fonts.push(font);
+                self.index.insert(key, i);
+                i
+            }
+        };
+        self.last = Some(LastCall {
+            family: font_family.to_owned(),
+            size_bits,
+            weight,
+            slant,
+            idx,
+        });
+        (idx, &self.fonts[idx])
     }
 }
 

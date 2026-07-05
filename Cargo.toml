@@ -36,6 +36,10 @@ unicode-segmentation = "1.13.2"
 unicode-properties = "0.1.4"
 unicode-normalization = "0.1.25"
 rustybuzz = "0.20.1"
+# FxHash: a fast, non-cryptographic hasher for the per-render measurement memo
+# (hot path, short keys). std's SipHash made an earlier width cache net-negative
+# on small docs; FxHash keeps the probe cheap enough to win across the doc mix.
+rustc-hash = "2"
 
 [features]
 default = ["subset-fonts"]

@@ -546,9 +546,12 @@ pub(super) fn populate_underline_metrics(fragments: &mut [Fragment], measurer: &
     for frag in fragments.iter_mut() {
         if let Fragment::Text { font, .. } = frag {
             if font.underline {
-                let (pos, thickness) = measurer.underline_metrics(font);
-                font.underline_position = pos;
-                font.underline_thickness = thickness;
+                // Underlined runs only; `make_mut` clones the shared font so
+                // the metrics can be written back.
+                let fp = std::rc::Rc::make_mut(font);
+                let (pos, thickness) = measurer.underline_metrics(fp);
+                fp.underline_position = pos;
+                fp.underline_thickness = thickness;
             }
         }
     }

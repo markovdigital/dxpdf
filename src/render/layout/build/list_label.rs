@@ -221,7 +221,7 @@ fn inject_text_label(
     let label_width = w;
     let label_frag = Fragment::Text {
         text: Rc::from(label_text.as_str()),
-        font: label_font.clone(),
+        font: Rc::new(label_font.clone()),
         color: label_color,
         shading: None,
         border: None,

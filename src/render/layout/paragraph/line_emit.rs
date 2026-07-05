@@ -1,5 +1,6 @@
 //! Line placement, command emission, and related helpers.
 
+use std::borrow::Cow;
 use std::rc::Rc;
 
 use super::super::draw_command::DrawCommand;
@@ -500,17 +501,21 @@ pub(super) fn emit_line_commands(
 /// Split text fragments wider than `max_width` into per-character fragments.
 /// Uses accurate measurements when a measurer is provided, otherwise
 /// falls back to uniform width distribution.
-pub(super) fn split_oversized_fragments(
-    fragments: &[Fragment],
+///
+/// Returns [`Cow::Borrowed`] on the common no-split path so callers avoid
+/// deep-cloning every paragraph's fragment vector; only an actual split
+/// materializes an owned `Vec`.
+pub(super) fn split_oversized_fragments<'a>(
+    fragments: &'a [Fragment],
     max_width: Pt,
     measure: MeasureTextFn<'_>,
-) -> Vec<Fragment> {
+) -> Cow<'a, [Fragment]> {
     // Fast path: check if any fragment actually needs splitting.
     let needs_split = fragments.iter().any(
         |f| matches!(f, Fragment::Text { width, text, .. } if *width > max_width && text.len() > 1),
     );
     if !needs_split {
-        return fragments.to_vec();
+        return Cow::Borrowed(fragments);
     }
 
     let mut result = Vec::with_capacity(fragments.len());
@@ -557,7 +562,7 @@ pub(super) fn split_oversized_fragments(
             _ => result.push(frag.clone()),
         }
     }
-    result
+    Cow::Owned(result)
 }
 
 /// True for fragments that place content by tab semantics — a regular tab

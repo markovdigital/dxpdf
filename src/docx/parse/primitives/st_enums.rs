@@ -596,7 +596,7 @@ impl From<StPTabAlignment> for PTabAlignment {
     }
 }
 
-// ── StPTabRelativeTo (§17.18.66 absolute position tab base) ────────────────
+// ── StPTabRelativeTo (§17.18.61 absolute position tab base) ────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -3,9 +3,10 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use rustc_hash::FxHashMap;
 use skia_safe::{
     path_effect::PathEffect, pdf, BlurStyle, Color4f, Data, MaskFilter, Paint, Path, PathBuilder,
-    PathFillType,
+    PathFillType, TextBlob,
 };
 
 use crate::render::dimension::Pt;
@@ -53,6 +54,10 @@ pub fn render_to_pdf(
     // (footer 📞 etc.) are rasterized once and shared.
     let mut emoji_rasterizer = EmojiRasterizer::default();
 
+    // Position-independent glyph runs, cached per (font slot, text). draw_str
+    // rebuilds this run (text → glyph ids → advances) on every call; reusing a
+    // TextBlob skips that remap for words repeated across the document.
+    let mut blob_cache: FxHashMap<usize, FxHashMap<Box<str>, TextBlob>> = FxHashMap::default();
     for page in pages {
         let mut on_page = doc.begin_page(to_size(page.page_size), None);
         {
@@ -64,6 +69,7 @@ pub fn render_to_pdf(
                 &mut font_cache,
                 &mut image_cache,
                 &mut emoji_rasterizer,
+                &mut blob_cache,
             );
         }
         doc = on_page.end_page();
@@ -80,7 +86,22 @@ fn render_page(
     font_cache: &mut fonts::FontCache,
     image_cache: &mut HashMap<*const [u8], skia_safe::Image>,
     emoji_rasterizer: &mut EmojiRasterizer,
+    blob_cache: &mut FxHashMap<usize, FxHashMap<Box<str>, TextBlob>>,
 ) {
+    // Reusable paints — built once per page instead of per draw command (a
+    // large doc emits 100k+). Each carries the fixed config for its purpose;
+    // only the fields that vary (color, stroke width) are set per command, so
+    // no state leaks between commands. `default_paint` is never mutated — it
+    // backs the image/emoji `draw_image_rect` calls.
+    let mut text_paint = Paint::default();
+    text_paint.set_anti_alias(true);
+    let mut stroke_paint = Paint::default();
+    stroke_paint.set_anti_alias(true);
+    stroke_paint.set_stroke(true);
+    let mut rect_paint = Paint::default();
+    rect_paint.set_anti_alias(false);
+    let default_paint = Paint::default();
+
     for cmd in &page.commands {
         match cmd {
             DrawCommand::Text {
@@ -94,20 +115,24 @@ fn render_page(
                 color,
                 text_scale,
             } => {
-                let base_font = font_cache.get(registry, font_family, *font_size, *bold, *italic);
+                let (slot, base_font) =
+                    font_cache.get_indexed(registry, font_family, *font_size, *bold, *italic);
                 // §17.3.2.45: a non-1.0 scale is applied via Skia's scale_x —
                 // that scales glyph advances and horizontal glyph extent
                 // without touching the cached, shared Font. Cloning and
-                // mutating a fresh Font keeps the cache invariant intact.
+                // mutating a fresh Font keeps the cache invariant intact. A
+                // scaled font is a one-off clone whose glyphs differ, so it
+                // bypasses the (slot-keyed) blob cache.
                 let scaled_font;
-                let font: &skia_safe::Font = if (*text_scale - 1.0).abs() > f32::EPSILON {
-                    let mut f = base_font.clone();
-                    f.set_scale_x(*text_scale);
-                    scaled_font = f;
-                    &scaled_font
-                } else {
-                    base_font
-                };
+                let (font, blob_slot): (&skia_safe::Font, Option<usize>) =
+                    if (*text_scale - 1.0).abs() > f32::EPSILON {
+                        let mut f = base_font.clone();
+                        f.set_scale_x(*text_scale);
+                        scaled_font = f;
+                        (&scaled_font, None)
+                    } else {
+                        (base_font, Some(slot))
+                    };
                 log::trace!(
                     "[paint] '{}' → font='{}' size={:.1}pt bold={} italic={} scale={:.2}",
                     &text[..text.len().min(30)],
@@ -117,9 +142,7 @@ fn render_page(
                     italic,
                     text_scale,
                 );
-                let mut paint = Paint::default();
-                paint.set_anti_alias(true);
-                paint.set_color4f(to_color4f(*color), None);
+                text_paint.set_color4f(to_color4f(*color), None);
 
                 if char_spacing.abs() > Pt::ZERO {
                     // §17.3.2.35 w:spacing — draw each character with
@@ -152,33 +175,42 @@ fn render_page(
                         } else {
                             font.measure_str(&*s, None).0
                         };
-                        canvas.draw_str(&*s, to_point(cursor), font, &paint);
+                        canvas.draw_str(&*s, to_point(cursor), font, &text_paint);
                         cursor.x += Pt::new(w) + *char_spacing;
                     }
+                } else if let Some(slot) = blob_slot {
+                    // Common path: reuse a cached, position-independent glyph
+                    // run instead of remapping text→glyphs on every draw_str.
+                    // Visually identical — a TextBlob built from the font uses
+                    // the same default cmap+advance positioning draw_str does.
+                    let inner = blob_cache.entry(slot).or_default();
+                    if let Some(blob) = inner.get(&**text) {
+                        canvas.draw_text_blob(blob, to_point(*position), &text_paint);
+                    } else if let Some(blob) = TextBlob::from_str(&**text, font) {
+                        canvas.draw_text_blob(&blob, to_point(*position), &text_paint);
+                        inner.insert(Box::from(&**text), blob);
+                    }
                 } else {
-                    canvas.draw_str(text, to_point(*position), font, &paint);
+                    canvas.draw_str(text, to_point(*position), font, &text_paint);
                 }
             }
             DrawCommand::Underline { line, color, width }
             | DrawCommand::Line { line, color, width } => {
-                let mut paint = Paint::default();
-                paint.set_anti_alias(true);
-                paint.set_stroke(true);
-                paint.set_stroke_width(f32::from(*width));
-                paint.set_color4f(to_color4f(*color), None);
+                stroke_paint.set_stroke_width(f32::from(*width));
+                stroke_paint.set_color4f(to_color4f(*color), None);
 
                 let (start, end) = to_line(*line);
-                canvas.draw_line(start, end, &paint);
+                canvas.draw_line(start, end, &stroke_paint);
             }
             DrawCommand::Image { rect, image_data } => {
                 let ptr_key: *const [u8] = Rc::as_ptr(&image_data.data);
                 if let Some(image) = image_cache.get(&ptr_key) {
-                    canvas.draw_image_rect(image, None, to_rect(*rect), &Paint::default());
+                    canvas.draw_image_rect(image, None, to_rect(*rect), &default_paint);
                 } else {
                     let decoded = decode_image(image_data);
                     if let Some(image) = decoded {
                         let image = downsample_if_oversize(image, *rect);
-                        canvas.draw_image_rect(&image, None, to_rect(*rect), &Paint::default());
+                        canvas.draw_image_rect(&image, None, to_rect(*rect), &default_paint);
                         image_cache.insert(ptr_key, image);
                     } else {
                         let magic = &image_data.data[..image_data.data.len().min(4)];
@@ -221,14 +253,12 @@ fn render_page(
                     None,
                     to_rect(*rect),
                     sampling,
-                    &Paint::default(),
+                    &default_paint,
                 );
             }
             DrawCommand::Rect { rect, color } => {
-                let mut paint = Paint::default();
-                paint.set_anti_alias(false);
-                paint.set_color4f(to_color4f(*color), None);
-                canvas.draw_rect(to_rect(*rect), &paint);
+                rect_paint.set_color4f(to_color4f(*color), None);
+                canvas.draw_rect(to_rect(*rect), &rect_paint);
             }
             DrawCommand::LinkAnnotation { rect, url } => {
                 let mut url_bytes = url.as_bytes().to_vec();

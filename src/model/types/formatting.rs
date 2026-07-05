@@ -183,7 +183,7 @@ pub enum TabLeader {
 pub struct PositionTab {
     /// §17.18.59: how following content aligns to the derived position.
     pub alignment: PTabAlignment,
-    /// §17.18.66: reference the position is measured against.
+    /// §17.18.61: reference the position is measured against.
     pub relative_to: PTabRelativeTo,
     /// §17.18.60: leader character filling the gap.
     pub leader: PTabLeader,
@@ -198,7 +198,7 @@ pub enum PTabAlignment {
     Right,
 }
 
-/// §17.18.66 ST_PTabRelativeTo — the base the position is measured from.
+/// §17.18.61 ST_PTabRelativeTo — the base the position is measured from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PTabRelativeTo {
     /// Relative to the page text margins.

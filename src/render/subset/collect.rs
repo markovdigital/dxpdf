@@ -16,6 +16,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use rustc_hash::FxHashMap;
 use skia_safe::FontStyle;
 
 use crate::render::fonts::{FontRegistry, TypefaceId};
@@ -78,6 +79,16 @@ fn font_style(bold: bool, italic: bool) -> FontStyle {
 pub fn collect(pages: &[LayoutedPage], registry: &FontRegistry) -> CodepointUsage {
     let mut usage = CodepointUsage::new();
 
+    // Memoize font resolution: `registry.resolve` lowercases the family, hashes,
+    // and clones a `TypefaceEntry` on every call, but the same (family, weight,
+    // slant) recurs across most of a document's 100k+ text commands. Cache the
+    // resolved `TypefaceId` per style combo — indexed `bold | italic<<1` — with
+    // the inner map probed by `&str` (`Box<str>: Borrow<str>`), so a hit
+    // allocates nothing. `resolve` is deterministic in (family, style), so this
+    // is exact.
+    let mut resolved: [FxHashMap<Box<str>, TypefaceId>; 4] =
+        std::array::from_fn(|_| FxHashMap::default());
+
     for page in pages {
         for cmd in &page.commands {
             if let DrawCommand::Text {
@@ -91,8 +102,16 @@ pub fn collect(pages: &[LayoutedPage], registry: &FontRegistry) -> CodepointUsag
                 if text.is_empty() {
                     continue;
                 }
-                let entry = registry.resolve(font_family, font_style(*bold, *italic));
-                let typeface_id = TypefaceId::from(&entry.typeface);
+                let slot = usize::from(*bold) | (usize::from(*italic) << 1);
+                let typeface_id = match resolved[slot].get(&**font_family) {
+                    Some(&id) => id,
+                    None => {
+                        let entry = registry.resolve(font_family, font_style(*bold, *italic));
+                        let id = TypefaceId::from(&entry.typeface);
+                        resolved[slot].insert(Box::from(&**font_family), id);
+                        id
+                    }
+                };
                 usage.insert(typeface_id, text.chars());
             }
         }

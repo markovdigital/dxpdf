@@ -106,7 +106,9 @@ pub(super) fn build_paragraph_block(
             {
                 if hyperlink_url.is_some() {
                     *color = RgbColor::BLACK;
-                    font.underline = false;
+                    // Rare (TOC hyperlinks only); clones this fragment's shared
+                    // font on write.
+                    Rc::make_mut(font).underline = false;
                 }
             }
         }
@@ -285,7 +287,7 @@ pub(super) fn build_note_content(
                     0,
                     Fragment::Text {
                         text: Rc::from(num_text.as_str()),
-                        font: ref_font,
+                        font: Rc::new(ref_font),
                         color: RgbColor::BLACK,
                         shading: None,
                         border: None,

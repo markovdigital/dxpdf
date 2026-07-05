@@ -1,16 +1,31 @@
 //! Text measurer — resolves text widths through a `FontRegistry`.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
+use rustc_hash::FxHashMap;
 use skia_safe::Font;
 
 use crate::render::dimension::Pt;
 use crate::render::emoji::resolve::{EmojiFamily, EmojiResolver, EmojiTypeface, RegistryLookup};
 use crate::render::emoji::shape::shape_text;
-use crate::render::fonts::{self, FontRegistry, TypefaceEntry};
+use crate::render::fonts::{self, FontRegistry, TypefaceEntry, TypefaceId};
 
-use super::fragment::FontProps;
+use super::fragment::{FontProps, TextMetrics};
+
+/// Per-font measurement memo: the font's metrics (constant for the font) plus
+/// the raw Skia `measure_str` advance for each distinct word seen. Keyed inside
+/// [`TextMeasurer`] by the font's stable slot index, so the family string is
+/// never re-hashed; the inner map is looked up by `&str` (via `Box<str>:
+/// Borrow<str>`) so a cache hit allocates nothing.
+struct FontMeasureCache {
+    metrics: TextMetrics,
+    /// Raw `measure_str` width (before `text_scale` / `char_spacing`), which
+    /// depends only on (typeface, size, text) — so it is safe to reuse across
+    /// runs that differ only in scale or spacing.
+    widths: FxHashMap<Box<str>, f32>,
+}
 
 /// Measures text using Skia fonts resolved through a [`FontRegistry`].
 /// Holds a per-instance `FontCache` for `Font` reuse across measurements.
@@ -25,6 +40,23 @@ pub struct TextMeasurer<'r> {
     /// Per-render dedup set so we warn at most once per cluster about a
     /// missing color emoji typeface.
     warned_emoji: RefCell<HashSet<String>>,
+    /// Per-render cache of extracted typeface bytes for emoji measurement,
+    /// keyed by typeface id. `to_font_data()` copies the whole typeface
+    /// (~190 MB for Apple Color Emoji), so — mirroring the raster pipeline's
+    /// `font_bytes_for` — we extract once per typeface instead of once per
+    /// cluster. `None` records a typeface that refuses to expose bytes so the
+    /// failed extraction isn't retried per cluster.
+    emoji_font_bytes: RefCell<HashMap<TypefaceId, Option<Rc<Vec<u8>>>>>,
+    /// Per-render memo of GSUB-aware advances from `measure_with_typeface`,
+    /// keyed by (typeface id, size in raw-f32 bits, cluster text). Skips
+    /// re-parsing a rustybuzz `Face` and re-shaping identical clusters.
+    emoji_advance_cache: RefCell<HashMap<(TypefaceId, u32, String), Pt>>,
+    /// Per-render text-measurement memo, indexed by the `FontCache` slot. Skips
+    /// the Skia `measure_str` call (and per-call `font.metrics()`) for words
+    /// that repeat within a font — heavy in prose, where a handful of short
+    /// words dominate. Uses FxHash: an earlier std-hasher width cache was
+    /// net-negative on small docs due to per-word hashing overhead.
+    measure_cache: RefCell<FxHashMap<usize, FontMeasureCache>>,
 }
 
 impl<'r> TextMeasurer<'r> {
@@ -34,6 +66,9 @@ impl<'r> TextMeasurer<'r> {
             font_cache: RefCell::new(fonts::FontCache::new()),
             emoji_resolver: EmojiResolver::new(RegistryLookup { registry }),
             warned_emoji: RefCell::new(HashSet::new()),
+            emoji_font_bytes: RefCell::new(HashMap::new()),
+            emoji_advance_cache: RefCell::new(HashMap::new()),
+            measure_cache: RefCell::new(FxHashMap::default()),
         }
     }
 
@@ -48,8 +83,8 @@ impl<'r> TextMeasurer<'r> {
         text: &str,
         font_props: &FontProps,
     ) -> (Pt, super::fragment::TextMetrics) {
-        let mut cache = self.font_cache.borrow_mut();
-        let font = cache.get(
+        let mut font_cache = self.font_cache.borrow_mut();
+        let (slot, font) = font_cache.get_indexed(
             self.registry,
             &font_props.family,
             font_props.size,
@@ -57,12 +92,31 @@ impl<'r> TextMeasurer<'r> {
             font_props.italic,
         );
 
-        let (width, _bounds) = font.measure_str(text, None);
-        let (_, metrics) = font.metrics();
-        let text_metrics = super::fragment::TextMetrics {
-            ascent: Pt::new(-metrics.ascent),
-            descent: Pt::new(metrics.descent),
-            leading: Pt::new(metrics.leading.max(0.0)),
+        // Metrics depend only on the font; the raw `measure_str` width only on
+        // (font, text). Both are memoized per font slot so a repeated word
+        // costs a hash probe instead of a Skia call. On a hit, `widths.get`
+        // borrows the `&str` (via `Box<str>: Borrow<str>`) and allocates
+        // nothing; only a first-seen word allocates a `Box<str>` key.
+        let mut cache = self.measure_cache.borrow_mut();
+        let fc = cache.entry(slot).or_insert_with(|| {
+            let (_, m) = font.metrics();
+            FontMeasureCache {
+                metrics: TextMetrics {
+                    ascent: Pt::new(-m.ascent),
+                    descent: Pt::new(m.descent),
+                    leading: Pt::new(m.leading.max(0.0)),
+                },
+                widths: FxHashMap::default(),
+            }
+        });
+        let text_metrics = fc.metrics;
+        let width = match fc.widths.get(text) {
+            Some(&w) => w,
+            None => {
+                let w = font.measure_str(text, None).0;
+                fc.widths.insert(Box::from(text), w);
+                w
+            }
         };
 
         // §17.3.2.45: scale the glyph advances horizontally per <w:w>.
@@ -71,11 +125,11 @@ impl<'r> TextMeasurer<'r> {
         // separate so kerning in points is unchanged by character scale).
         let scaled_width = Pt::new(width * font_props.text_scale);
 
-        // §17.3.2.35: include character spacing in the measured width
-        // so line fitting accounts for the extra inter-character space.
-        let char_count = text.chars().count();
-        let spacing_extra = if char_count > 0 {
-            font_props.char_spacing * (char_count as f32)
+        // §17.3.2.35: include character spacing in the measured width so line
+        // fitting accounts for the extra inter-character space. Skip the
+        // char-count scan entirely in the common no-spacing case.
+        let spacing_extra = if font_props.char_spacing != Pt::ZERO {
+            font_props.char_spacing * (text.chars().count() as f32)
         } else {
             Pt::ZERO
         };
@@ -161,16 +215,45 @@ impl<'r> TextMeasurer<'r> {
             leading: Pt::new(metrics.leading.max(0.0)),
         };
 
-        // Try the GSUB-aware advance first; fall back to the cmap-only
-        // path if the typeface bytes can't be extracted or shaped.
-        let advance = typeface
-            .typeface
-            .to_font_data()
-            .and_then(|(bytes, _)| shape_text(&bytes, text, f32::from(size)).ok())
+        let advance = self.emoji_advance(text, typeface, size, &font);
+        (advance, text_metrics)
+    }
+
+    /// GSUB-aware advance for `text` against `typeface` at `size`, memoized
+    /// per render. Both the extracted font bytes and the shaped advance are
+    /// cached: `to_font_data()` copies the whole typeface (~190 MB for Apple
+    /// Color Emoji) and `shape_text` re-parses it, so doing either once per
+    /// cluster dominated layout for emoji-heavy documents. Falls back to the
+    /// cmap-only `measure_str` advance when bytes can't be extracted or
+    /// shaping fails — the same best-effort policy the rasterizer uses.
+    fn emoji_advance(&self, text: &str, typeface: &TypefaceEntry, size: Pt, font: &Font) -> Pt {
+        let id = TypefaceId::from(&typeface.typeface);
+        let key = (id, f32::from(size).to_bits(), text.to_owned());
+        if let Some(&cached) = self.emoji_advance_cache.borrow().get(&key) {
+            return cached;
+        }
+
+        let advance = self
+            .emoji_font_bytes(id, typeface)
+            .and_then(|bytes| shape_text(&bytes, text, f32::from(size)).ok())
             .map(|run| run.total_advance)
             .unwrap_or_else(|| Pt::new(font.measure_str(text, None).0));
 
-        (advance, text_metrics)
+        self.emoji_advance_cache.borrow_mut().insert(key, advance);
+        advance
+    }
+
+    /// Extracted bytes for `typeface`, cached by id — mirrors the raster
+    /// pipeline's `font_bytes_for` so a ~190 MB emoji typeface is serialized
+    /// via `to_font_data()` at most once per render. A cached `None` marks a
+    /// typeface that exposes no bytes, so the failed probe isn't repeated.
+    fn emoji_font_bytes(&self, id: TypefaceId, typeface: &TypefaceEntry) -> Option<Rc<Vec<u8>>> {
+        if let Some(cached) = self.emoji_font_bytes.borrow().get(&id) {
+            return cached.clone();
+        }
+        let bytes = typeface.typeface.to_font_data().map(|(b, _)| Rc::new(b));
+        self.emoji_font_bytes.borrow_mut().insert(id, bytes.clone());
+        bytes
     }
 
     /// Log a warning once per cluster when no color emoji typeface is
