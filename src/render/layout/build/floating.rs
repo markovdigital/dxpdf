@@ -740,12 +740,41 @@ fn resolve_anchor_y(
 
 // ── VML position helpers ───────────────────────────────────────────────────
 
+/// True when an `mc:AlternateContent` Choice carries a DrawingML `wps:wsp`
+/// shape that we render directly. In that case the VML `Fallback` is dead
+/// content: its absolute position must not be read (it would otherwise
+/// hijack the header origin — see `find_vml_absolute_position`). Mirrors the
+/// fallback-suppression gate in `fragment::collect`.
+fn choice_renders_wps(ac: &model::AlternateContent) -> bool {
+    use crate::model::{GraphicContent, ImagePlacement, Inline};
+
+    fn walk(inlines: &[Inline]) -> bool {
+        inlines.iter().any(|inline| match inline {
+            Inline::Image(img) => {
+                matches!(img.placement, ImagePlacement::Anchor(_))
+                    && matches!(img.graphic, Some(GraphicContent::WordProcessingShape(_)))
+            }
+            Inline::Hyperlink(link) => walk(&link.content),
+            Inline::Field(f) => walk(&f.content),
+            _ => false,
+        })
+    }
+    ac.choices.iter().any(|c| walk(&c.content))
+}
+
 /// Search an inline (and AlternateContent fallback) for a VML text box with
 /// absolute positioning.
 pub(super) fn find_vml_absolute_position(inline: &model::Inline) -> Option<(Pt, Pt)> {
     match inline {
         model::Inline::Pict(pict) => find_vml_pos_in_pict(pict),
         model::Inline::AlternateContent(ac) => {
+            // Only the VML fallback carries an absolute position, and it is
+            // meaningful only when we actually render that fallback. When the
+            // Choice is a DrawingML shape we render instead, ignore the
+            // fallback so its position doesn't become the header's origin.
+            if choice_renders_wps(ac) {
+                return None;
+            }
             if let Some(ref fallback) = ac.fallback {
                 for inner in fallback {
                     if let Some(pos) = find_vml_absolute_position(inner) {
@@ -932,4 +961,102 @@ fn vml_length_to_pt(len: model::VmlLength) -> Pt {
         VmlLengthUnit::None => value / 914400.0 * 72.0, // bare number = EMU
         _ => value,                        // Em, Percent — fallback to raw value
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{choice_renders_wps, find_vml_absolute_position};
+    use crate::model::dimension::Dimension;
+    use crate::model::geometry::{EdgeInsets, Size};
+    use crate::model::{
+        AlternateContent, AnchorPosition, AnchorProperties, AnchorRelativeFrom, DocProperties,
+        GraphicContent, Image, ImagePlacement, Inline, McChoice, McRequires, TextWrap,
+        WordProcessingShape,
+    };
+
+    /// A minimally-populated anchored `wps:wsp` shape (as `Inline::Image`).
+    fn anchored_wps_image() -> Image {
+        Image {
+            extent: Size::new(Dimension::new(0), Dimension::new(0)),
+            effect_extent: None,
+            doc_properties: DocProperties {
+                id: 1,
+                name: "shape".into(),
+                description: None,
+                hidden: None,
+                title: None,
+            },
+            graphic_frame_locks: None,
+            graphic: Some(GraphicContent::WordProcessingShape(WordProcessingShape {
+                cnv_pr: None,
+                shape_properties: None,
+                style_line_ref: None,
+                style_effect_ref: None,
+                body_pr: None,
+                txbx_content: vec![],
+            })),
+            placement: ImagePlacement::Anchor(AnchorProperties {
+                distance: EdgeInsets::new(
+                    Dimension::new(0),
+                    Dimension::new(0),
+                    Dimension::new(0),
+                    Dimension::new(0),
+                ),
+                simple_pos: None,
+                use_simple_pos: None,
+                horizontal_position: AnchorPosition::Offset {
+                    relative_from: AnchorRelativeFrom::Margin,
+                    offset: Dimension::new(0),
+                },
+                vertical_position: AnchorPosition::Offset {
+                    relative_from: AnchorRelativeFrom::Paragraph,
+                    offset: Dimension::new(0),
+                },
+                wrap: TextWrap::None,
+                behind_text: false,
+                lock_anchor: false,
+                allow_overlap: true,
+                relative_height: 0,
+                layout_in_cell: None,
+                hidden: None,
+            }),
+        }
+    }
+
+    fn ac_with_wps_choice() -> AlternateContent {
+        AlternateContent {
+            choices: vec![McChoice {
+                requires: McRequires::Wps,
+                content: vec![Inline::Image(Box::new(anchored_wps_image()))],
+            }],
+            // A non-empty fallback that would otherwise be searched.
+            fallback: Some(vec![Inline::InstrText(String::new())]),
+        }
+    }
+
+    #[test]
+    fn choice_renders_wps_detects_anchored_shape() {
+        assert!(choice_renders_wps(&ac_with_wps_choice()));
+    }
+
+    #[test]
+    fn choice_renders_wps_false_without_shape() {
+        let ac = AlternateContent {
+            choices: vec![McChoice {
+                requires: McRequires::Wps,
+                content: vec![Inline::InstrText(String::new())],
+            }],
+            fallback: None,
+        };
+        assert!(!choice_renders_wps(&ac));
+    }
+
+    /// Regression: when the Choice is a DrawingML shape we render, the VML
+    /// fallback's absolute position must be ignored — otherwise it hijacks
+    /// the header origin and pushes paragraph-anchored content off-page.
+    #[test]
+    fn wps_choice_suppresses_fallback_absolute_position() {
+        let inline = Inline::AlternateContent(ac_with_wps_choice());
+        assert!(find_vml_absolute_position(&inline).is_none());
+    }
 }
