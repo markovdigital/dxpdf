@@ -227,6 +227,7 @@ fn render_header(
                 fi.size.height,
             ),
             image_data: fi.image_data.clone(),
+            src_rect: fi.src_rect,
         });
     }
 
@@ -250,6 +251,7 @@ fn render_header(
                 fi.size.height,
             ),
             image_data: fi.image_data.clone(),
+            src_rect: fi.src_rect,
         });
     }
     // Paragraph-anchored shapes ride through `result.commands` above (their
@@ -293,6 +295,7 @@ fn render_footer(
                 fi.size.height,
             ),
             image_data: fi.image_data.clone(),
+            src_rect: fi.src_rect,
         });
     }
 
@@ -315,6 +318,7 @@ fn render_footer(
                 fi.size.height,
             ),
             image_data: fi.image_data.clone(),
+            src_rect: fi.src_rect,
         });
     }
     // Paragraph-anchored shapes ride through `result.commands` above (their

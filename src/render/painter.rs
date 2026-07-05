@@ -5,8 +5,8 @@ use std::rc::Rc;
 
 use rustc_hash::FxHashMap;
 use skia_safe::{
-    path_effect::PathEffect, pdf, BlurStyle, Color4f, Data, MaskFilter, Paint, Path, PathBuilder,
-    PathFillType, TextBlob,
+    canvas::SrcRectConstraint, path_effect::PathEffect, pdf, BlurStyle, Color4f, Data, MaskFilter,
+    Paint, Path, PathBuilder, PathFillType, TextBlob,
 };
 
 use crate::render::dimension::Pt;
@@ -202,15 +202,55 @@ fn render_page(
                 let (start, end) = to_line(*line);
                 canvas.draw_line(start, end, &stroke_paint);
             }
-            DrawCommand::Image { rect, image_data } => {
+            DrawCommand::Image {
+                rect,
+                image_data,
+                src_rect,
+            } => {
+                let dst = to_rect(*rect);
+                // §20.1.10.48: draw only the cropped source sub-rectangle
+                // (in the image's own pixel space), stretched to `dst`.
+                let draw = |image: &skia_safe::Image| match src_rect {
+                    Some(crop) => {
+                        let (iw, ih) = (image.width() as f32, image.height() as f32);
+                        let src = skia_safe::Rect::from_xywh(
+                            crop.origin.x.raw() * iw,
+                            crop.origin.y.raw() * ih,
+                            crop.size.width.raw() * iw,
+                            crop.size.height.raw() * ih,
+                        );
+                        canvas.draw_image_rect(
+                            image,
+                            Some((&src, SrcRectConstraint::Strict)),
+                            dst,
+                            &default_paint,
+                        );
+                    }
+                    None => {
+                        canvas.draw_image_rect(image, None, dst, &default_paint);
+                    }
+                };
                 let ptr_key: *const [u8] = Rc::as_ptr(&image_data.data);
                 if let Some(image) = image_cache.get(&ptr_key) {
-                    canvas.draw_image_rect(image, None, to_rect(*rect), &default_paint);
+                    draw(image);
                 } else {
                     let decoded = decode_image(image_data);
                     if let Some(image) = decoded {
-                        let image = downsample_if_oversize(image, *rect);
-                        canvas.draw_image_rect(&image, None, to_rect(*rect), &default_paint);
+                        // Keep the visible (cropped) region at target DPI by
+                        // sizing the downsample to the pre-crop extent.
+                        let downsample_rect = match src_rect {
+                            Some(c) if c.size.width.raw() > 0.0 && c.size.height.raw() > 0.0 => {
+                                crate::render::geometry::PtRect::from_xywh(
+                                    rect.origin.x,
+                                    rect.origin.y,
+                                    Pt::new(rect.size.width.raw() / c.size.width.raw()),
+                                    Pt::new(rect.size.height.raw() / c.size.height.raw()),
+                                )
+                            }
+                            _ => *rect,
+                        };
+                        let image = downsample_if_oversize(image, downsample_rect);
+                        draw(&image);
                         image_cache.insert(ptr_key, image);
                     } else {
                         let magic = &image_data.data[..image_data.data.len().min(4)];

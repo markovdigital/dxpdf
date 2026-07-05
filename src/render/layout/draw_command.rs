@@ -41,6 +41,10 @@ pub enum DrawCommand {
     Image {
         rect: PtRect,
         image_data: MediaEntry,
+        /// §20.1.10.48 `a:srcRect` — fractional source crop in `[0, 1]`
+        /// relative to the image's natural extent, applied before the image
+        /// is stretched into `rect`. `None` draws the whole image.
+        src_rect: Option<PtRect>,
     },
     /// One emoji grapheme cluster placed at `rect`. The painter rasterizes
     /// the cluster against `typeface` (Skia raster backend honours the color

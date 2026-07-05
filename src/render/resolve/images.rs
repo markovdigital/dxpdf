@@ -23,6 +23,42 @@ pub fn extract_image_rel_id(image: &Image) -> Option<&RelId> {
     }
 }
 
+/// §20.1.10.48 `a:srcRect` — the picture's source crop, as a rectangle in
+/// `[0, 1]` relative to the image's natural extent (origin = top-left crop
+/// offset, size = visible fraction). Returns `None` when there is no crop,
+/// so the whole image is drawn. Word crops the source *before* stretching it
+/// into the display frame; ignoring this squashes cropped logos (the visible
+/// aspect ratio no longer matches the frame). See `ResolvedBlip::src_rect`
+/// for the same value on the shape-fill path.
+pub fn extract_src_rect(image: &Image) -> Option<crate::render::geometry::PtRect> {
+    use crate::model::dimension::{Dimension, ThousandthPercent};
+    use crate::render::dimension::Pt;
+    use crate::render::geometry::PtRect;
+
+    let GraphicContent::Picture(pic) = image.graphic.as_ref()? else {
+        return None;
+    };
+    let rel = pic.blip_fill.src_rect.as_ref()?;
+    // CT_RelativeRect edges are in thousandths of a percent (100% = 100000).
+    let frac =
+        |d: Option<Dimension<ThousandthPercent>>| d.map_or(0.0, |v| v.raw() as f32 / 100_000.0);
+    let (left, top, right, bottom) = (
+        frac(rel.left),
+        frac(rel.top),
+        frac(rel.right),
+        frac(rel.bottom),
+    );
+    if left == 0.0 && top == 0.0 && right == 0.0 && bottom == 0.0 {
+        return None;
+    }
+    Some(PtRect::from_xywh(
+        Pt::new(left),
+        Pt::new(top),
+        Pt::new((1.0 - left - right).max(0.0)),
+        Pt::new((1.0 - top - bottom).max(0.0)),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,5 +222,34 @@ mod tests {
             },
         };
         assert!(extract_image_rel_id(&img).is_none());
+    }
+
+    #[test]
+    fn src_rect_none_when_no_crop() {
+        // `make_image_with_blip` leaves `blip_fill.src_rect = None`.
+        assert!(extract_src_rect(&make_image_with_blip("rId1")).is_none());
+    }
+
+    #[test]
+    fn src_rect_converts_thousandth_percent_crop() {
+        // Real values from the IP-05 header logo: top/right/bottom crop, no
+        // left. Thousandths of a percent → fractions of the natural extent.
+        let mut img = make_image_with_blip("rId1");
+        if let Some(GraphicContent::Picture(pic)) = img.graphic.as_mut() {
+            pic.blip_fill.src_rect = Some(RelativeRect {
+                left: None,
+                top: Some(Dimension::new(15883)),
+                right: Some(Dimension::new(14520)),
+                bottom: Some(Dimension::new(17647)),
+            });
+        }
+        let r = extract_src_rect(&img).expect("crop present");
+        assert!((r.origin.x.raw() - 0.0).abs() < 1e-4, "left crop = 0");
+        assert!((r.origin.y.raw() - 0.15883).abs() < 1e-4, "top crop");
+        assert!((r.size.width.raw() - 0.85480).abs() < 1e-4, "visible width");
+        assert!(
+            (r.size.height.raw() - 0.66470).abs() < 1e-4,
+            "visible height"
+        );
     }
 }

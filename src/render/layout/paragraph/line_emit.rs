@@ -333,7 +333,10 @@ pub(super) fn emit_line_commands(
                     x += *width;
                 }
                 Fragment::Image {
-                    size, image_data, ..
+                    size,
+                    image_data,
+                    src_rect,
+                    ..
                 } => {
                     if let Some(data) = image_data {
                         commands.push(DrawCommand::Image {
@@ -344,6 +347,7 @@ pub(super) fn emit_line_commands(
                                 size.height,
                             ),
                             image_data: data.clone(),
+                            src_rect: *src_rect,
                         });
                     }
                     x += size.width;

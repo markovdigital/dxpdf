@@ -120,6 +120,7 @@ pub(super) fn extract_floating_images(
         images.push(FloatingImage {
             image_data,
             size: PtSize::new(w, h),
+            src_rect: crate::render::resolve::images::extract_src_rect(img),
             x,
             y,
             wrap_mode: crate::render::layout::section::WrapMode::from_model(&anchor.wrap),
@@ -379,6 +380,8 @@ fn build_vml_floating_image(
     Some(FloatingImage {
         image_data,
         size: PtSize::new(width, height),
+        // VML crops (`v:imagedata` crop*) are a separate mechanism; not modelled.
+        src_rect: None,
         x,
         y: FloatingImageY::RelativeToParagraph(y),
         wrap_mode: WrapMode::None,
