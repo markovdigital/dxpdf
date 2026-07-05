@@ -30,6 +30,46 @@ const IMAGE_TARGET_DPI: f32 = 300.0;
 /// Conversion factor from PDF points to target pixels.
 const IMAGE_DPI_SCALE: f32 = IMAGE_TARGET_DPI / 72.0;
 
+/// Decoded-image cache, keyed by media data-pointer identity **and** the
+/// downsample target size. Keying on the target (not the pointer alone) means
+/// the same media placed at two different sizes — or the same size with
+/// different `srcRect` crops, since a crop inflates the target — each caches
+/// its own appropriately-scaled bitmap. Keying by pointer alone would let a
+/// second placement reuse the first's resolution and render blurry.
+type ImageCache = HashMap<(*const [u8], i32, i32), skia_safe::Image>;
+
+/// Downsample target dimensions (in pixels) for a display rect at
+/// `IMAGE_TARGET_DPI`. Shared by the image cache key and
+/// `downsample_if_oversize` so both agree on the resolution a placement needs.
+fn downsample_target(rect: crate::render::geometry::PtRect) -> (i32, i32) {
+    (
+        (rect.size.width.raw() * IMAGE_DPI_SCALE).ceil() as i32,
+        (rect.size.height.raw() * IMAGE_DPI_SCALE).ceil() as i32,
+    )
+}
+
+/// The display rect scaled up by the inverse of the visible `srcRect`
+/// fraction, so the downsample keeps the *cropped* region at target DPI (a
+/// heavy crop magnifies few source pixels into the frame, so it needs more of
+/// them). No crop, or a degenerate zero-size crop, leaves the display rect
+/// unchanged.
+fn crop_adjusted_downsample_rect(
+    rect: &crate::render::geometry::PtRect,
+    src_rect: &Option<crate::render::geometry::PtRect>,
+) -> crate::render::geometry::PtRect {
+    match src_rect {
+        Some(c) if c.size.width.raw() > 0.0 && c.size.height.raw() > 0.0 => {
+            crate::render::geometry::PtRect::from_xywh(
+                rect.origin.x,
+                rect.origin.y,
+                Pt::new(rect.size.width.raw() / c.size.width.raw()),
+                Pt::new(rect.size.height.raw() / c.size.height.raw()),
+            )
+        }
+        _ => *rect,
+    }
+}
+
 /// Render laid-out pages to PDF bytes via Skia.
 ///
 /// `registry` owns the typeface universe for this render — paint resolves
@@ -46,10 +86,10 @@ pub fn render_to_pdf(
     };
     let mut doc = pdf::new_document(&mut pdf_bytes, Some(&pdf_metadata));
     let mut font_cache = fonts::FontCache::new();
-    // Cache decoded Skia images across pages, keyed by Rc pointer identity.
-    // Avoids re-copying and re-decoding the same image bytes on every page
-    // (e.g. a logo repeated in headers/footers).
-    let mut image_cache: HashMap<*const [u8], skia_safe::Image> = HashMap::new();
+    // Cache decoded Skia images across pages. Avoids re-copying and
+    // re-decoding the same image bytes on every page (e.g. a logo repeated in
+    // headers/footers). See `ImageCache` for the keying.
+    let mut image_cache: ImageCache = HashMap::new();
     // Per-render emoji rasterizer — clusters that recur across pages
     // (footer 📞 etc.) are rasterized once and shared.
     let mut emoji_rasterizer = EmojiRasterizer::default();
@@ -84,7 +124,7 @@ fn render_page(
     page: &LayoutedPage,
     registry: &FontRegistry,
     font_cache: &mut fonts::FontCache,
-    image_cache: &mut HashMap<*const [u8], skia_safe::Image>,
+    image_cache: &mut ImageCache,
     emoji_rasterizer: &mut EmojiRasterizer,
     blob_cache: &mut FxHashMap<usize, FxHashMap<Box<str>, TextBlob>>,
 ) {
@@ -230,38 +270,28 @@ fn render_page(
                         canvas.draw_image_rect(image, None, dst, &default_paint);
                     }
                 };
-                let ptr_key: *const [u8] = Rc::as_ptr(&image_data.data);
-                if let Some(image) = image_cache.get(&ptr_key) {
+                // Size the downsample to the pre-crop extent, then key the
+                // cache on (media identity, that target) so a different-size or
+                // different-crop placement of the same media does not reuse
+                // this placement's resolution.
+                let downsample_rect = crop_adjusted_downsample_rect(rect, src_rect);
+                let (target_w, target_h) = downsample_target(downsample_rect);
+                let key = (Rc::as_ptr(&image_data.data), target_w, target_h);
+                if let Some(image) = image_cache.get(&key) {
                     draw(image);
+                } else if let Some(image) = decode_image(image_data) {
+                    let image = downsample_if_oversize(image, downsample_rect);
+                    draw(&image);
+                    image_cache.insert(key, image);
                 } else {
-                    let decoded = decode_image(image_data);
-                    if let Some(image) = decoded {
-                        // Keep the visible (cropped) region at target DPI by
-                        // sizing the downsample to the pre-crop extent.
-                        let downsample_rect = match src_rect {
-                            Some(c) if c.size.width.raw() > 0.0 && c.size.height.raw() > 0.0 => {
-                                crate::render::geometry::PtRect::from_xywh(
-                                    rect.origin.x,
-                                    rect.origin.y,
-                                    Pt::new(rect.size.width.raw() / c.size.width.raw()),
-                                    Pt::new(rect.size.height.raw() / c.size.height.raw()),
-                                )
-                            }
-                            _ => *rect,
-                        };
-                        let image = downsample_if_oversize(image, downsample_rect);
-                        draw(&image);
-                        image_cache.insert(ptr_key, image);
-                    } else {
-                        let magic = &image_data.data[..image_data.data.len().min(4)];
-                        log::warn!(
-                            "[paint] unsupported image format {:?} — could not decode {} bytes \
-                             (magic: {:02x?}); image will be blank",
-                            image_data.format,
-                            image_data.data.len(),
-                            magic,
-                        );
-                    }
+                    let magic = &image_data.data[..image_data.data.len().min(4)];
+                    log::warn!(
+                        "[paint] unsupported image format {:?} — could not decode {} bytes \
+                         (magic: {:02x?}); image will be blank",
+                        image_data.format,
+                        image_data.data.len(),
+                        magic,
+                    );
                 }
             }
             DrawCommand::EmojiCluster {
@@ -600,8 +630,7 @@ fn downsample_if_oversize(
     use skia_safe::CubicResampler;
     use skia_safe::{AlphaType, ColorType, ImageInfo, SamplingOptions};
 
-    let target_w = (rect.size.width.raw() * IMAGE_DPI_SCALE).ceil() as i32;
-    let target_h = (rect.size.height.raw() * IMAGE_DPI_SCALE).ceil() as i32;
+    let (target_w, target_h) = downsample_target(rect);
     if image.width() > target_w && image.height() > target_h && target_w > 0 && target_h > 0 {
         log::debug!(
             "[paint] downsampling image {}×{} → {}×{} (display {:.0}×{:.0}pt @ {:.0} DPI)",
@@ -844,5 +873,55 @@ mod tests {
 
         let pdf_bytes = render_to_pdf(&[page], &registry).expect("unicode text must not panic");
         assert_eq!(&pdf_bytes[..5], b"%PDF-");
+    }
+
+    // ── image cache keying ──────────────────────────────────────────
+
+    fn rect(w: f32, h: f32) -> crate::render::geometry::PtRect {
+        crate::render::geometry::PtRect::from_xywh(Pt::ZERO, Pt::ZERO, Pt::new(w), Pt::new(h))
+    }
+
+    #[test]
+    fn downsample_target_scales_points_to_target_dpi() {
+        // 72pt @ 300 DPI = 300px; 36pt = 150px.
+        assert_eq!(downsample_target(rect(72.0, 36.0)), (300, 150));
+    }
+
+    #[test]
+    fn crop_inflates_downsample_target_so_cache_keys_differ() {
+        // Same on-page size; one placement crops to the middle 50%×50%.
+        let display = rect(72.0, 36.0);
+        let uncropped = crop_adjusted_downsample_rect(&display, &None);
+        let cropped = crop_adjusted_downsample_rect(
+            &display,
+            &Some(crate::render::geometry::PtRect::from_xywh(
+                Pt::new(0.25),
+                Pt::new(0.25),
+                Pt::new(0.5),
+                Pt::new(0.5),
+            )),
+        );
+        // The crop needs 2× the source resolution for the same display size,
+        // so the downsample targets — and thus the cache keys — differ, and
+        // the second placement won't reuse the first's lower-res bitmap.
+        assert_eq!(downsample_target(uncropped), (300, 150));
+        assert_eq!(downsample_target(cropped), (600, 300));
+        assert_ne!(downsample_target(uncropped), downsample_target(cropped));
+    }
+
+    #[test]
+    fn degenerate_zero_crop_leaves_downsample_rect_unchanged() {
+        let display = rect(72.0, 36.0);
+        // A zero-area crop must not divide by zero; falls back to the display rect.
+        let zero = Some(crate::render::geometry::PtRect::from_xywh(
+            Pt::ZERO,
+            Pt::ZERO,
+            Pt::ZERO,
+            Pt::ZERO,
+        ));
+        assert_eq!(
+            downsample_target(crop_adjusted_downsample_rect(&display, &zero)),
+            downsample_target(display),
+        );
     }
 }
