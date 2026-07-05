@@ -457,7 +457,8 @@ impl FontCache {
         bold: bool,
         italic: bool,
     ) -> &Font {
-        self.get_indexed(registry, font_family, font_size, bold, italic).1
+        self.get_indexed(registry, font_family, font_size, bold, italic)
+            .1
     }
 
     /// Like [`get`](Self::get), but also returns the resolved `Font`'s stable
