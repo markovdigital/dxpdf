@@ -92,7 +92,11 @@ pub struct FragmentBorder {
 pub enum Fragment {
     Text {
         text: Rc<str>,
-        font: FontProps,
+        /// Shared per run: all words of a run carry the same font properties,
+        /// so an `Rc` keeps the `Fragment::Text` variant small (a pointer, not
+        /// an embedded ~48-byte `FontProps`) and makes per-word clones a
+        /// refcount bump.
+        font: Rc<FontProps>,
         color: RgbColor,
         /// §17.3.2.32: run-level shading (background color behind text).
         shading: Option<RgbColor>,

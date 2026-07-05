@@ -218,7 +218,7 @@ mod tests {
     fn text_frag(text: &str, width: f32) -> Fragment {
         Fragment::Text {
             text: text.into(),
-            font: FontProps {
+            font: Rc::new(FontProps {
                 family: Rc::from("Test"),
                 size: Pt::new(12.0),
                 bold: false,
@@ -228,7 +228,7 @@ mod tests {
                 text_scale: 1.0,
                 underline_position: Pt::ZERO,
                 underline_thickness: Pt::ZERO,
-            },
+            }),
             color: RgbColor::BLACK,
             width: Pt::new(width),
             trimmed_width: Pt::new(width),
@@ -347,7 +347,7 @@ mod tests {
         let frags = vec![
             Fragment::Text {
                 text: "small".into(),
-                font: FontProps {
+                font: Rc::new(FontProps {
                     family: Rc::from("Test"),
                     size: Pt::new(10.0),
                     bold: false,
@@ -357,7 +357,7 @@ mod tests {
                     text_scale: 1.0,
                     underline_position: Pt::ZERO,
                     underline_thickness: Pt::ZERO,
-                },
+                }),
                 color: RgbColor::BLACK,
                 width: Pt::new(20.0),
                 trimmed_width: Pt::new(20.0),
@@ -374,7 +374,7 @@ mod tests {
             },
             Fragment::Text {
                 text: "big".into(),
-                font: FontProps {
+                font: Rc::new(FontProps {
                     family: Rc::from("Test"),
                     size: Pt::new(24.0),
                     bold: false,
@@ -384,7 +384,7 @@ mod tests {
                     text_scale: 1.0,
                     underline_position: Pt::ZERO,
                     underline_thickness: Pt::ZERO,
-                },
+                }),
                 color: RgbColor::BLACK,
                 width: Pt::new(30.0),
                 trimmed_width: Pt::new(30.0),

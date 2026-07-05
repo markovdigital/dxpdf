@@ -397,7 +397,7 @@ mod tests {
         };
         Fragment::Text {
             text: Rc::from(s),
-            font,
+            font: Rc::new(font),
             color: RgbColor::BLACK,
             shading: None,
             border: None,
