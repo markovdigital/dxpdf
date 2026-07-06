@@ -40,8 +40,7 @@ pub fn extract_src_rect(image: &Image) -> Option<crate::render::geometry::PtRect
     };
     let rel = pic.blip_fill.src_rect.as_ref()?;
     // CT_RelativeRect edges are in thousandths of a percent (100% = 100000).
-    let frac =
-        |d: Option<Dimension<ThousandthPercent>>| d.map_or(0.0, |v| v.raw() as f32 / 100_000.0);
+    let frac = |d: Option<Dimension<ThousandthPercent>>| d.map_or(0.0, |v| v.to_fraction());
     let (left, top, right, bottom) = (
         frac(rel.left),
         frac(rel.top),

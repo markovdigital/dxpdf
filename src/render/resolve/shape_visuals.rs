@@ -142,7 +142,7 @@ pub fn resolve_fill(fill: &DrawingFill, ctx: &DrawingColorContext<'_>) -> Resolv
                 .stops
                 .iter()
                 .map(|s| GradientStopRgba {
-                    position: s.position.raw() as f32 / 100_000.0,
+                    position: s.position.to_fraction(),
                     color: resolve_drawing_color(&s.color, ctx),
                 })
                 .collect();
@@ -275,8 +275,8 @@ fn map_line_dash(dash: &LineDash, width: Pt) -> ResolvedDashPattern {
             let mut out = Vec::with_capacity(stops.len() * 2);
             for s in stops {
                 // §20.1.8.27: dash/space in 1000ths of a percent of line width.
-                out.push(Pt::new(s.dash.raw() as f32 / 100_000.0 * w));
-                out.push(Pt::new(s.space.raw() as f32 / 100_000.0 * w));
+                out.push(Pt::new(s.dash.to_fraction() * w));
+                out.push(Pt::new(s.space.to_fraction() * w));
             }
             ResolvedDashPattern::Dashes(out)
         }
