@@ -26,7 +26,7 @@ use crate::render::skia_conv::{to_color4f, to_line, to_point, to_rect, to_size};
 /// turn a display size in points into a pixel target at a given image DPI.
 ///
 /// The target image DPI itself is a render-time knob (`RenderOptions::image_dpi`,
-/// default 72) threaded in from the caller. Higher values embed more source
+/// default 220) threaded in from the caller. Higher values embed more source
 /// pixels, which matters because Skia's PDF backend does not emit
 /// `/Interpolate true` on image dicts, so viewers smooth-scale with
 /// nearest-neighbor and need enough pixels to absorb the zoom.
@@ -1102,7 +1102,7 @@ mod tests {
 
     #[test]
     fn downsample_target_scales_points_to_target_dpi() {
-        // 72pt @ 72 DPI = 72px (1 px/pt, the default); @ 300 DPI = 300px.
+        // 72pt @ 72 DPI = 72px (1 px/pt); @ 300 DPI = 300px.
         assert_eq!(downsample_target(rect(72.0, 36.0), 72.0), (72, 36));
         assert_eq!(downsample_target(rect(72.0, 36.0), 300.0), (300, 150));
         assert_eq!(downsample_target(rect(72.0, 36.0), 150.0), (150, 75));

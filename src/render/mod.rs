@@ -27,10 +27,13 @@ use crate::model::Document;
 
 /// Default target resolution (pixels per inch) for embedded raster images.
 ///
-/// 72 DPI matches the PDF user-space unit (1 pt = 1/72 in), so an image drawn
-/// at its natural point size is embedded at roughly one source pixel per point.
-/// Front-ends (CLI, Python) raise this to trade file size for image sharpness.
-pub const DEFAULT_IMAGE_DPI: f32 = 72.0;
+/// This is a *ceiling*: images are downsampled toward it but never upsampled
+/// (see [`painter::render_to_pdf`]), so it caps only oversized images and
+/// otherwise preserves the source resolution. 220 mirrors Microsoft Word's
+/// default image-compression resolution, keeping images crisp at 100% zoom on
+/// typical (including HiDPI) displays. Front-ends (CLI, Python) override it to
+/// trade file size against sharpness — e.g. 300 for print, 96 for small files.
+pub const DEFAULT_IMAGE_DPI: f32 = 220.0;
 
 /// Lower bound applied to any requested image DPI. A non-positive request would
 /// produce a zero/negative downsample target, so it is clamped up to this floor.
@@ -493,9 +496,10 @@ mod tests {
     }
 
     #[test]
-    fn render_options_default_is_72_dpi() {
-        assert_eq!(DEFAULT_IMAGE_DPI, 72.0);
-        assert_eq!(RenderOptions::default().image_dpi(), 72.0);
+    fn render_options_default_matches_word_resolution() {
+        // 220 ppi mirrors Word's default image-compression resolution.
+        assert_eq!(DEFAULT_IMAGE_DPI, 220.0);
+        assert_eq!(RenderOptions::default().image_dpi(), 220.0);
     }
 
     #[test]
