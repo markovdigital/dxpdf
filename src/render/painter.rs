@@ -22,13 +22,15 @@ use crate::render::resolve::images::MediaEntry;
 use crate::render::resolve::shape_geometry::{PathVerb, SubPath};
 use crate::render::skia_conv::{to_color4f, to_line, to_point, to_rect, to_size};
 
-/// Target resolution for embedded images (pixels per inch).
-/// 300 DPI gives crisp on-screen zoom and print output. Skia's PDF backend
-/// does not emit `/Interpolate true` on image dicts, so viewers smooth-scale
-/// with nearest-neighbor — we need enough source pixels to absorb that.
-const IMAGE_TARGET_DPI: f32 = 300.0;
-/// Conversion factor from PDF points to target pixels.
-const IMAGE_DPI_SCALE: f32 = IMAGE_TARGET_DPI / 72.0;
+/// PDF user-space units per inch — the fixed 1 pt = 1/72 in conversion used to
+/// turn a display size in points into a pixel target at a given image DPI.
+///
+/// The target image DPI itself is a render-time knob (`RenderOptions::image_dpi`,
+/// default 72) threaded in from the caller. Higher values embed more source
+/// pixels, which matters because Skia's PDF backend does not emit
+/// `/Interpolate true` on image dicts, so viewers smooth-scale with
+/// nearest-neighbor and need enough pixels to absorb the zoom.
+const POINTS_PER_INCH: f32 = 72.0;
 
 /// Quantized fractional `srcRect` crop, part of the cache key. Each of
 /// (origin.x, origin.y, size.w, size.h) is scaled by the OOXML
@@ -44,13 +46,15 @@ type CropKey = Option<(i32, i32, i32, i32)>;
 type ImageCacheKey = (*const [u8], i32, i32, CropKey);
 type ImageCache = HashMap<ImageCacheKey, skia_safe::Image>;
 
-/// Downsample target dimensions (in pixels) for a display rect at
-/// `IMAGE_TARGET_DPI`. Shared by the image cache key and the downsample passes
-/// so both agree on the resolution a placement needs.
-fn downsample_target(rect: crate::render::geometry::PtRect) -> (i32, i32) {
+/// Downsample target dimensions (in pixels) for a display rect at `image_dpi`.
+/// Shared by the image cache key and the downsample passes so both agree on the
+/// resolution a placement needs. `image_dpi` is assumed sanitized (positive and
+/// finite) by [`RenderOptions`](crate::render::RenderOptions).
+fn downsample_target(rect: crate::render::geometry::PtRect, image_dpi: f32) -> (i32, i32) {
+    let scale = image_dpi / POINTS_PER_INCH;
     (
-        (rect.size.width.raw() * IMAGE_DPI_SCALE).ceil() as i32,
-        (rect.size.height.raw() * IMAGE_DPI_SCALE).ceil() as i32,
+        (rect.size.width.raw() * scale).ceil() as i32,
+        (rect.size.height.raw() * scale).ceil() as i32,
     )
 }
 
@@ -71,9 +75,14 @@ fn quantize_crop(crop: &crate::render::geometry::PtRect) -> (i32, i32, i32, i32)
 /// `registry` owns the typeface universe for this render — paint resolves
 /// every text run through it so any subsetted typefaces (swapped in by
 /// `subset::apply` between layout and paint) are picked up correctly.
+///
+/// `image_dpi` is the target resolution (pixels per inch) raster images are
+/// downsampled to before embedding; see [`RenderOptions`](crate::render::RenderOptions).
+/// It is assumed sanitized (positive, finite) by the caller.
 pub fn render_to_pdf(
     pages: &[LayoutedPage],
     registry: &FontRegistry,
+    image_dpi: f32,
 ) -> Result<Vec<u8>, RenderError> {
     let mut pdf_bytes: Vec<u8> = Vec::new();
     let pdf_metadata = pdf::Metadata {
@@ -106,6 +115,7 @@ pub fn render_to_pdf(
                 &mut image_cache,
                 &mut emoji_rasterizer,
                 &mut blob_cache,
+                image_dpi,
             );
         }
         doc = on_page.end_page();
@@ -115,6 +125,7 @@ pub fn render_to_pdf(
     Ok(pdf_bytes)
 }
 
+#[allow(clippy::too_many_arguments)] // paint state is passed explicitly, not bundled
 fn render_page(
     canvas: &skia_safe::Canvas,
     page: &LayoutedPage,
@@ -123,6 +134,7 @@ fn render_page(
     image_cache: &mut ImageCache,
     emoji_rasterizer: &mut EmojiRasterizer,
     blob_cache: &mut FxHashMap<usize, FxHashMap<Box<str>, TextBlob>>,
+    image_dpi: f32,
 ) {
     // Reusable paints — built once per page instead of per draw command (a
     // large doc emits 100k+). Each carries the fixed config for its purpose;
@@ -259,7 +271,7 @@ fn render_page(
                     // size, crop). The crop is baked into the cached bitmap
                     // below, so two placements that differ only in size or in
                     // `srcRect` each cache their own bitmap.
-                    let (target_w, target_h) = downsample_target(draw_rect);
+                    let (target_w, target_h) = downsample_target(draw_rect, image_dpi);
                     let key = (
                         Rc::as_ptr(&image_data.data),
                         target_w,
@@ -275,28 +287,30 @@ fn render_page(
                             // Bake the visible sub-region into a right-sized
                             // bitmap so the PDF never carries the cropped-away
                             // pixels at full resolution (finding 3).
-                            Some(crop) => match prepare_cropped(&decoded, crop, draw_rect) {
-                                Some(image) => {
-                                    canvas.draw_image_rect(&image, None, dst, &default_paint);
-                                    image_cache.insert(key, image);
+                            Some(crop) => {
+                                match prepare_cropped(&decoded, crop, draw_rect, image_dpi) {
+                                    Some(image) => {
+                                        canvas.draw_image_rect(&image, None, dst, &default_paint);
+                                        image_cache.insert(key, image);
+                                    }
+                                    // Near-OOM: the raster surface could not be
+                                    // allocated. Fall back to a draw-time crop of
+                                    // the full image — correct pixels, just
+                                    // unoptimized — and leave it uncached (the key
+                                    // implies a baked crop).
+                                    None => {
+                                        let src = src_pixel_rect(&decoded, crop);
+                                        canvas.draw_image_rect(
+                                            &decoded,
+                                            Some((&src, SrcRectConstraint::Strict)),
+                                            dst,
+                                            &default_paint,
+                                        );
+                                    }
                                 }
-                                // Near-OOM: the raster surface could not be
-                                // allocated. Fall back to a draw-time crop of
-                                // the full image — correct pixels, just
-                                // unoptimized — and leave it uncached (the key
-                                // implies a baked crop).
-                                None => {
-                                    let src = src_pixel_rect(&decoded, crop);
-                                    canvas.draw_image_rect(
-                                        &decoded,
-                                        Some((&src, SrcRectConstraint::Strict)),
-                                        dst,
-                                        &default_paint,
-                                    );
-                                }
-                            },
+                            }
                             None => {
-                                let image = downsample_if_oversize(decoded, draw_rect);
+                                let image = downsample_if_oversize(decoded, draw_rect, image_dpi);
                                 canvas.draw_image_rect(&image, None, dst, &default_paint);
                                 image_cache.insert(key, image);
                             }
@@ -640,16 +654,17 @@ fn decode_image(entry: &MediaEntry) -> Option<skia_safe::Image> {
 }
 
 /// Downsample an image if its native pixel dimensions significantly exceed
-/// the display dimensions at `IMAGE_TARGET_DPI`. Uses Mitchell-Netravali
-/// cubic filtering for high-quality results.
+/// the display dimensions at `image_dpi`. Uses Mitchell-Netravali cubic
+/// filtering for high-quality results.
 fn downsample_if_oversize(
     image: skia_safe::Image,
     rect: crate::render::geometry::PtRect,
+    image_dpi: f32,
 ) -> skia_safe::Image {
     use skia_safe::CubicResampler;
     use skia_safe::{AlphaType, ColorType, ImageInfo, SamplingOptions};
 
-    let (target_w, target_h) = downsample_target(rect);
+    let (target_w, target_h) = downsample_target(rect, image_dpi);
     if image.width() > target_w && image.height() > target_h && target_w > 0 && target_h > 0 {
         log::debug!(
             "[paint] downsampling image {}×{} → {}×{} (display {:.0}×{:.0}pt @ {:.0} DPI)",
@@ -659,7 +674,7 @@ fn downsample_if_oversize(
             target_h,
             rect.size.width.raw(),
             rect.size.height.raw(),
-            IMAGE_TARGET_DPI,
+            image_dpi,
         );
         // Draw scaled image onto an opaque surface so Skia applies JPEG
         // encoding (encoding_quality) instead of lossless FlateDecode.
@@ -719,13 +734,14 @@ fn prepare_cropped(
     image: &skia_safe::Image,
     src_rect: &crate::render::geometry::PtRect,
     display: crate::render::geometry::PtRect,
+    image_dpi: f32,
 ) -> Option<skia_safe::Image> {
     use skia_safe::{AlphaType, ColorType, CubicResampler, ImageInfo, SamplingOptions};
 
     let src = src_pixel_rect(image, src_rect);
     // Never allocate more pixels than the visible region provides (no upsample)
     // nor more than the display needs at target DPI (no bloat).
-    let (disp_w, disp_h) = downsample_target(display);
+    let (disp_w, disp_h) = downsample_target(display, image_dpi);
     let target_w = disp_w.min(src.width().round() as i32).max(1);
     let target_h = disp_h.min(src.height().round() as i32).max(1);
 
@@ -839,7 +855,8 @@ mod tests {
             page_size: PtSize::new(Pt::new(612.0), Pt::new(792.0)),
         };
 
-        let pdf_bytes = render_to_pdf(&[page], &registry).expect("render_to_pdf must succeed");
+        let pdf_bytes = render_to_pdf(&[page], &registry, crate::render::DEFAULT_IMAGE_DPI)
+            .expect("render_to_pdf must succeed");
         assert!(pdf_bytes.len() > 100, "PDF output must be non-trivial");
         assert_eq!(&pdf_bytes[..5], b"%PDF-", "output must be valid PDF");
     }
@@ -862,7 +879,8 @@ mod tests {
             page_size: PtSize::new(Pt::new(612.0), Pt::new(792.0)),
         };
 
-        let pdf_bytes = render_to_pdf(&[page], &registry).expect("render_to_pdf must succeed");
+        let pdf_bytes = render_to_pdf(&[page], &registry, crate::render::DEFAULT_IMAGE_DPI)
+            .expect("render_to_pdf must succeed");
         assert!(pdf_bytes.len() > 100);
         assert_eq!(&pdf_bytes[..5], b"%PDF-");
     }
@@ -885,7 +903,8 @@ mod tests {
             page_size: PtSize::new(Pt::new(612.0), Pt::new(792.0)),
         };
 
-        let pdf_bytes = render_to_pdf(&[page], &registry).expect("empty text must not panic");
+        let pdf_bytes = render_to_pdf(&[page], &registry, crate::render::DEFAULT_IMAGE_DPI)
+            .expect("empty text must not panic");
         assert_eq!(&pdf_bytes[..5], b"%PDF-");
     }
 
@@ -937,7 +956,8 @@ mod tests {
             }],
             page_size: PtSize::new(Pt::new(612.0), Pt::new(792.0)),
         };
-        let pdf = render_to_pdf(&[page], &test_registry()).expect("render path");
+        let pdf = render_to_pdf(&[page], &test_registry(), crate::render::DEFAULT_IMAGE_DPI)
+            .expect("render path");
         assert_eq!(&pdf[..5], b"%PDF-");
     }
 
@@ -983,7 +1003,8 @@ mod tests {
             }],
             page_size: PtSize::new(Pt::new(612.0), Pt::new(792.0)),
         };
-        let pdf = render_to_pdf(&[page], &test_registry()).expect("render dashed line");
+        let pdf = render_to_pdf(&[page], &test_registry(), crate::render::DEFAULT_IMAGE_DPI)
+            .expect("render dashed line");
         assert_eq!(&pdf[..5], b"%PDF-");
     }
 
@@ -1005,7 +1026,8 @@ mod tests {
             page_size: PtSize::new(Pt::new(612.0), Pt::new(792.0)),
         };
 
-        let pdf_bytes = render_to_pdf(&[page], &registry).expect("unicode text must not panic");
+        let pdf_bytes = render_to_pdf(&[page], &registry, crate::render::DEFAULT_IMAGE_DPI)
+            .expect("unicode text must not panic");
         assert_eq!(&pdf_bytes[..5], b"%PDF-");
     }
 
@@ -1015,10 +1037,77 @@ mod tests {
         crate::render::geometry::PtRect::from_xywh(Pt::ZERO, Pt::ZERO, Pt::new(w), Pt::new(h))
     }
 
+    /// A `size`×`size` PNG with a high-frequency checker pattern, so its
+    /// encoded byte count scales clearly with the downsample resolution.
+    fn textured_png(size: i32) -> Vec<u8> {
+        use skia_safe::{AlphaType, ColorType, EncodedImageFormat, ImageInfo};
+        let info = ImageInfo::new((size, size), ColorType::RGBA8888, AlphaType::Opaque, None);
+        let mut surface = skia_safe::surfaces::raster(&info, None, None).expect("raster surface");
+        let canvas = surface.canvas();
+        canvas.clear(Color4f::new(1.0, 1.0, 1.0, 1.0));
+        let cells = 32;
+        let step = size as f32 / cells as f32;
+        let mut paint = Paint::default();
+        for gy in 0..cells {
+            for gx in 0..cells {
+                if (gx + gy) % 2 == 0 {
+                    continue;
+                }
+                let shade = ((gx * 7 + gy * 13) % 255) as f32 / 255.0;
+                paint.set_color4f(Color4f::new(shade, 1.0 - shade, shade * 0.5, 1.0), None);
+                let r = skia_safe::Rect::from_xywh(gx as f32 * step, gy as f32 * step, step, step);
+                canvas.draw_rect(r, &paint);
+            }
+        }
+        surface
+            .image_snapshot()
+            .encode(None, EncodedImageFormat::PNG, None)
+            .expect("encode png")
+            .as_bytes()
+            .to_vec()
+    }
+
+    #[test]
+    fn render_to_pdf_image_dpi_controls_embedded_resolution() {
+        // End-to-end: a large source image drawn small is embedded at the
+        // target DPI. A higher DPI keeps more source pixels, so the PDF grows —
+        // proving `image_dpi` threads through render_to_pdf into the downsample.
+        use crate::model::ImageFormat;
+        use crate::render::resolve::images::MediaEntry;
+
+        let media = MediaEntry {
+            data: Rc::from(textured_png(1200).into_boxed_slice()),
+            format: ImageFormat::Png,
+        };
+        let page = || LayoutedPage {
+            commands: vec![DrawCommand::Image {
+                rect: rect(72.0, 72.0),
+                image_data: media.clone(),
+                src_rect: None,
+            }],
+            page_size: PtSize::new(Pt::new(200.0), Pt::new(200.0)),
+        };
+
+        let registry = test_registry();
+        let pdf_72 = render_to_pdf(&[page()], &registry, 72.0).expect("render at 72 dpi");
+        let pdf_300 = render_to_pdf(&[page()], &registry, 300.0).expect("render at 300 dpi");
+
+        assert!(
+            pdf_300.len() > pdf_72.len(),
+            "300 DPI PDF ({} bytes) should embed more image data than 72 DPI PDF ({} bytes)",
+            pdf_300.len(),
+            pdf_72.len()
+        );
+    }
+
     #[test]
     fn downsample_target_scales_points_to_target_dpi() {
-        // 72pt @ 300 DPI = 300px; 36pt = 150px.
-        assert_eq!(downsample_target(rect(72.0, 36.0)), (300, 150));
+        // 72pt @ 72 DPI = 72px (1 px/pt, the default); @ 300 DPI = 300px.
+        assert_eq!(downsample_target(rect(72.0, 36.0), 72.0), (72, 36));
+        assert_eq!(downsample_target(rect(72.0, 36.0), 300.0), (300, 150));
+        assert_eq!(downsample_target(rect(72.0, 36.0), 150.0), (150, 75));
+        // Sub-pixel targets round up so a placement never resolves to zero px.
+        assert_eq!(downsample_target(rect(1.0, 1.0), 72.0), (1, 1));
     }
 
     #[test]
@@ -1065,7 +1154,7 @@ mod tests {
             Pt::new(0.1),
             Pt::new(0.1),
         );
-        let out = prepare_cropped(&src, &crop, rect(72.0, 72.0)).expect("prepare");
+        let out = prepare_cropped(&src, &crop, rect(72.0, 72.0), 300.0).expect("prepare");
         assert_eq!((out.width(), out.height()), (100, 100));
     }
 
@@ -1081,7 +1170,7 @@ mod tests {
             Pt::new(0.5),
             Pt::new(0.5),
         );
-        let out = prepare_cropped(&src, &crop, rect(72.0, 72.0)).expect("prepare");
+        let out = prepare_cropped(&src, &crop, rect(72.0, 72.0), 300.0).expect("prepare");
         assert_eq!((out.width(), out.height()), (300, 300));
     }
 

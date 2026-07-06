@@ -25,6 +25,55 @@ pub mod subset;
 
 use crate::model::Document;
 
+/// Default target resolution (pixels per inch) for embedded raster images.
+///
+/// 72 DPI matches the PDF user-space unit (1 pt = 1/72 in), so an image drawn
+/// at its natural point size is embedded at roughly one source pixel per point.
+/// Front-ends (CLI, Python) raise this to trade file size for image sharpness.
+pub const DEFAULT_IMAGE_DPI: f32 = 72.0;
+
+/// Lower bound applied to any requested image DPI. A non-positive request would
+/// produce a zero/negative downsample target, so it is clamped up to this floor.
+const MIN_IMAGE_DPI: f32 = 1.0;
+
+/// Tunable knobs for the paint phase.
+///
+/// Constructed via [`RenderOptions::default`] and the `with_*` builder setters,
+/// so requested values are sanitized on the way in and additional knobs can be
+/// added without breaking call sites.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RenderOptions {
+    /// Target resolution (pixels per inch) images are downsampled to before
+    /// embedding. Higher values yield crisper images and larger PDFs.
+    image_dpi: f32,
+}
+
+impl RenderOptions {
+    /// Set the target image resolution in pixels per inch. Non-positive or
+    /// non-finite requests are clamped up to [`MIN_IMAGE_DPI`].
+    pub fn with_image_dpi(mut self, image_dpi: f32) -> Self {
+        self.image_dpi = if image_dpi.is_finite() {
+            image_dpi.max(MIN_IMAGE_DPI)
+        } else {
+            MIN_IMAGE_DPI
+        };
+        self
+    }
+
+    /// The sanitized target image resolution in pixels per inch.
+    pub fn image_dpi(&self) -> f32 {
+        self.image_dpi
+    }
+}
+
+impl Default for RenderOptions {
+    fn default() -> Self {
+        Self {
+            image_dpi: DEFAULT_IMAGE_DPI,
+        }
+    }
+}
+
 use crate::model::Block;
 use crate::render::layout::build::{
     build_section_blocks, default_line_height, BuildContext, BuildState,
@@ -68,15 +117,16 @@ fn estimate_cursor_y(
 }
 
 /// Full pipeline: resolve → preload fonts → layout → paint.
-pub fn render(doc: &Document) -> Result<Vec<u8>, error::RenderError> {
+pub fn render(doc: &Document, options: &RenderOptions) -> Result<Vec<u8>, error::RenderError> {
     let font_mgr = skia_safe::FontMgr::new();
-    render_with_font_mgr(doc, &font_mgr)
+    render_with_font_mgr(doc, &font_mgr, options)
 }
 
 /// Render with a pre-configured FontMgr (for reuse across calls).
 pub fn render_with_font_mgr(
     doc: &Document,
     font_mgr: &skia_safe::FontMgr,
+    options: &RenderOptions,
 ) -> Result<Vec<u8>, error::RenderError> {
     let resolved = resolve::resolve(doc);
     #[allow(unused_mut)] // mut required only when subset-fonts is enabled
@@ -94,7 +144,7 @@ pub fn render_with_font_mgr(
         log::info!("font subset: {report}");
     }
 
-    painter::render_to_pdf(&pages, &registry)
+    painter::render_to_pdf(&pages, &registry, options.image_dpi())
 }
 
 /// Resolve and lay out a document without painting to PDF.
@@ -440,6 +490,46 @@ mod tests {
             }))],
             rsids: ParagraphRevisionIds::default(),
         }))
+    }
+
+    #[test]
+    fn render_options_default_is_72_dpi() {
+        assert_eq!(DEFAULT_IMAGE_DPI, 72.0);
+        assert_eq!(RenderOptions::default().image_dpi(), 72.0);
+    }
+
+    #[test]
+    fn render_options_with_image_dpi_overrides() {
+        assert_eq!(
+            RenderOptions::default().with_image_dpi(300.0).image_dpi(),
+            300.0
+        );
+    }
+
+    #[test]
+    fn render_options_clamps_non_positive_and_non_finite_dpi() {
+        // Zero, negative, and non-finite requests clamp up to the floor so the
+        // downsample target is always a meaningful positive resolution.
+        assert_eq!(
+            RenderOptions::default().with_image_dpi(0.0).image_dpi(),
+            1.0
+        );
+        assert_eq!(
+            RenderOptions::default().with_image_dpi(-50.0).image_dpi(),
+            1.0
+        );
+        assert_eq!(
+            RenderOptions::default()
+                .with_image_dpi(f32::NAN)
+                .image_dpi(),
+            1.0
+        );
+        assert_eq!(
+            RenderOptions::default()
+                .with_image_dpi(f32::INFINITY)
+                .image_dpi(),
+            1.0
+        );
     }
 
     #[test]
