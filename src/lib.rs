@@ -39,7 +39,7 @@ mod python {
     /// Convert DOCX bytes to PDF bytes.
     ///
     /// `image_dpi` sets the target resolution (pixels per inch) embedded raster
-    /// images are downsampled to; defaults to 72.
+    /// images are downsampled to; defaults to 220.
     #[pyfunction]
     #[pyo3(signature = (docx_bytes, image_dpi = crate::DEFAULT_IMAGE_DPI))]
     fn convert(docx_bytes: &[u8], image_dpi: f32) -> PyResult<Vec<u8>> {
@@ -51,7 +51,7 @@ mod python {
     /// Convert a DOCX file to a PDF file.
     ///
     /// `image_dpi` sets the target resolution (pixels per inch) embedded raster
-    /// images are downsampled to; defaults to 72.
+    /// images are downsampled to; defaults to 220.
     #[pyfunction]
     #[pyo3(signature = (input, output, image_dpi = crate::DEFAULT_IMAGE_DPI))]
     fn convert_file(input: &str, output: &str, image_dpi: f32) -> PyResult<()> {
