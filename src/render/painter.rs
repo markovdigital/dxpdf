@@ -243,62 +243,74 @@ fn render_page(
                 image_data,
                 src_rect,
             } => {
-                let dst = to_rect(*rect);
-                // Key on (media identity, downsample target for the display
-                // size, crop). The crop is part of the key because it is baked
-                // into the cached bitmap below, so two placements that differ
-                // only in size or in `srcRect` each cache their own bitmap.
-                let (target_w, target_h) = downsample_target(*rect);
-                let key = (
-                    Rc::as_ptr(&image_data.data),
-                    target_w,
-                    target_h,
-                    src_rect.as_ref().map(quantize_crop),
-                );
-                if let Some(image) = image_cache.get(&key) {
-                    // The cached bitmap already has any crop baked in → the
-                    // whole bitmap maps to `dst`.
-                    canvas.draw_image_rect(image, None, dst, &default_paint);
-                } else if let Some(decoded) = decode_image(image_data) {
-                    match src_rect {
-                        // §20.1.10.48: bake the visible sub-region into a
-                        // right-sized bitmap so the PDF never carries the
-                        // cropped-away pixels at full resolution (finding 3).
-                        Some(crop) => match prepare_cropped(&decoded, crop, *rect) {
-                            Some(image) => {
+                // §20.1.10.48: resolve the srcRect against the image bounds. A
+                // region reaching outside the image (negative insets) pads the
+                // frame — it becomes an in-image crop plus a shrunken `dst`,
+                // and the padding band of `dst` is left undrawn. No srcRect →
+                // whole image to the whole dst; a region wholly outside the
+                // image → nothing to draw.
+                let resolved = match src_rect {
+                    None => Some((*rect, None)),
+                    Some(sr) => resolve_src_padding(*rect, sr).map(|(d, c)| (d, Some(c))),
+                };
+                if let Some((draw_rect, crop)) = resolved {
+                    let dst = to_rect(draw_rect);
+                    // Key on (media identity, downsample target for the display
+                    // size, crop). The crop is baked into the cached bitmap
+                    // below, so two placements that differ only in size or in
+                    // `srcRect` each cache their own bitmap.
+                    let (target_w, target_h) = downsample_target(draw_rect);
+                    let key = (
+                        Rc::as_ptr(&image_data.data),
+                        target_w,
+                        target_h,
+                        crop.as_ref().map(quantize_crop),
+                    );
+                    if let Some(image) = image_cache.get(&key) {
+                        // The cached bitmap already has any crop baked in → the
+                        // whole bitmap maps to `dst`.
+                        canvas.draw_image_rect(image, None, dst, &default_paint);
+                    } else if let Some(decoded) = decode_image(image_data) {
+                        match &crop {
+                            // Bake the visible sub-region into a right-sized
+                            // bitmap so the PDF never carries the cropped-away
+                            // pixels at full resolution (finding 3).
+                            Some(crop) => match prepare_cropped(&decoded, crop, draw_rect) {
+                                Some(image) => {
+                                    canvas.draw_image_rect(&image, None, dst, &default_paint);
+                                    image_cache.insert(key, image);
+                                }
+                                // Near-OOM: the raster surface could not be
+                                // allocated. Fall back to a draw-time crop of
+                                // the full image — correct pixels, just
+                                // unoptimized — and leave it uncached (the key
+                                // implies a baked crop).
+                                None => {
+                                    let src = src_pixel_rect(&decoded, crop);
+                                    canvas.draw_image_rect(
+                                        &decoded,
+                                        Some((&src, SrcRectConstraint::Strict)),
+                                        dst,
+                                        &default_paint,
+                                    );
+                                }
+                            },
+                            None => {
+                                let image = downsample_if_oversize(decoded, draw_rect);
                                 canvas.draw_image_rect(&image, None, dst, &default_paint);
                                 image_cache.insert(key, image);
                             }
-                            // Near-OOM: the raster surface could not be
-                            // allocated. Fall back to a draw-time crop of the
-                            // full image — correct pixels, just unoptimized —
-                            // and leave it uncached (the key implies a baked
-                            // crop).
-                            None => {
-                                let src = src_pixel_rect(&decoded, crop);
-                                canvas.draw_image_rect(
-                                    &decoded,
-                                    Some((&src, SrcRectConstraint::Strict)),
-                                    dst,
-                                    &default_paint,
-                                );
-                            }
-                        },
-                        None => {
-                            let image = downsample_if_oversize(decoded, *rect);
-                            canvas.draw_image_rect(&image, None, dst, &default_paint);
-                            image_cache.insert(key, image);
                         }
+                    } else {
+                        let magic = &image_data.data[..image_data.data.len().min(4)];
+                        log::warn!(
+                            "[paint] unsupported image format {:?} — could not decode {} bytes \
+                             (magic: {:02x?}); image will be blank",
+                            image_data.format,
+                            image_data.data.len(),
+                            magic,
+                        );
                     }
-                } else {
-                    let magic = &image_data.data[..image_data.data.len().min(4)];
-                    log::warn!(
-                        "[paint] unsupported image format {:?} — could not decode {} bytes \
-                         (magic: {:02x?}); image will be blank",
-                        image_data.format,
-                        image_data.data.len(),
-                        magic,
-                    );
                 }
             }
             DrawCommand::EmojiCluster {
@@ -738,6 +750,59 @@ fn prepare_cropped(
     Some(surface.image_snapshot())
 }
 
+/// Resolve an `a:srcRect` region against the image bounds for painting
+/// (§20.1.10.48). The fractional region `[origin, origin + size]` maps linearly
+/// onto `dst`. When it reaches outside the image's `[0, 1]` extent — negative
+/// insets, i.e. letterbox/pillarbox padding — the outside area is *empty*, not
+/// clipped: clamp the region to the image and shrink `dst` to the
+/// sub-rectangle the clamped region maps onto, so the padding band of `dst` is
+/// simply left undrawn (transparent) instead of `Strict` sampling stretching
+/// the image over it.
+///
+/// Returns the in-bounds `(dst, crop)` to draw, or `None` when the region lies
+/// wholly outside the image (nothing visible). An already in-bounds region
+/// comes back with `dst` and `crop` unchanged.
+fn resolve_src_padding(
+    dst: crate::render::geometry::PtRect,
+    src: &crate::render::geometry::PtRect,
+) -> Option<(
+    crate::render::geometry::PtRect,
+    crate::render::geometry::PtRect,
+)> {
+    use crate::render::geometry::PtRect;
+
+    let (sx0, sy0) = (src.origin.x.raw(), src.origin.y.raw());
+    let (sw, sh) = (src.size.width.raw(), src.size.height.raw());
+    if sw <= 0.0 || sh <= 0.0 {
+        return None;
+    }
+    let (sx1, sy1) = (sx0 + sw, sy0 + sh);
+    // Clamp the source region to the image extent [0, 1].
+    let (cx0, cy0) = (sx0.max(0.0), sy0.max(0.0));
+    let (cx1, cy1) = (sx1.min(1.0), sy1.min(1.0));
+    if cx1 <= cx0 || cy1 <= cy0 {
+        return None; // wholly outside the image
+    }
+    // Fraction of `dst` the clamped region covers (0 at the region's own edge).
+    let (tx0, tx1) = ((cx0 - sx0) / sw, (cx1 - sx0) / sw);
+    let (ty0, ty1) = ((cy0 - sy0) / sh, (cy1 - sy0) / sh);
+    let (dx, dy) = (dst.origin.x.raw(), dst.origin.y.raw());
+    let (dw, dh) = (dst.size.width.raw(), dst.size.height.raw());
+    let inset_dst = PtRect::from_xywh(
+        Pt::new(dx + tx0 * dw),
+        Pt::new(dy + ty0 * dh),
+        Pt::new((tx1 - tx0) * dw),
+        Pt::new((ty1 - ty0) * dh),
+    );
+    let crop = PtRect::from_xywh(
+        Pt::new(cx0),
+        Pt::new(cy0),
+        Pt::new(cx1 - cx0),
+        Pt::new(cy1 - cy0),
+    );
+    Some((inset_dst, crop))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1018,5 +1083,52 @@ mod tests {
         );
         let out = prepare_cropped(&src, &crop, rect(72.0, 72.0)).expect("prepare");
         assert_eq!((out.width(), out.height()), (300, 300));
+    }
+
+    // ── srcRect padding resolution ──────────────────────────────────
+
+    fn xywh(x: f32, y: f32, w: f32, h: f32) -> crate::render::geometry::PtRect {
+        crate::render::geometry::PtRect::from_xywh(Pt::new(x), Pt::new(y), Pt::new(w), Pt::new(h))
+    }
+
+    #[test]
+    fn resolve_src_padding_is_a_no_op_for_an_in_bounds_crop() {
+        // A crop fully inside [0,1] leaves dst unchanged and the crop as-is.
+        let dst = rect(100.0, 50.0);
+        let crop = xywh(0.1, 0.2, 0.5, 0.6);
+        let (out_dst, out_crop) = resolve_src_padding(dst, &crop).expect("visible");
+        assert_eq!(out_dst.origin.x.raw(), 0.0);
+        assert_eq!(out_dst.origin.y.raw(), 0.0);
+        assert_eq!(out_dst.size.width.raw(), 100.0);
+        assert_eq!(out_dst.size.height.raw(), 50.0);
+        assert!((out_crop.origin.x.raw() - 0.1).abs() < 1e-5);
+        assert!((out_crop.size.width.raw() - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn resolve_src_padding_insets_dst_and_clamps_crop_for_negative_insets() {
+        // srcRect region [-0.2, 1.2] horizontally (left = right = -0.2 → 20%
+        // pillarbox padding each side), full height. The whole image is drawn
+        // into the middle of dst; the side bands are left undrawn.
+        let dst = xywh(0.0, 0.0, 100.0, 100.0);
+        let src = xywh(-0.2, 0.0, 1.4, 1.0);
+        let (out_dst, out_crop) = resolve_src_padding(dst, &src).expect("visible");
+        // Clamped source region is the full image.
+        assert!((out_crop.origin.x.raw() - 0.0).abs() < 1e-5);
+        assert!((out_crop.size.width.raw() - 1.0).abs() < 1e-5);
+        // dst inset by 0.2/1.4 ≈ 14.29% on the left, width 1.0/1.4 ≈ 71.43%.
+        assert!((out_dst.origin.x.raw() - 100.0 * 0.2 / 1.4).abs() < 1e-3);
+        assert!((out_dst.size.width.raw() - 100.0 * 1.0 / 1.4).abs() < 1e-3);
+        // Vertical is untouched (region already in-bounds).
+        assert_eq!(out_dst.origin.y.raw(), 0.0);
+        assert_eq!(out_dst.size.height.raw(), 100.0);
+    }
+
+    #[test]
+    fn resolve_src_padding_returns_none_when_region_is_wholly_outside() {
+        // Region starts past the right edge of the image → nothing visible.
+        let dst = rect(100.0, 100.0);
+        let src = xywh(1.5, 0.0, 0.3, 1.0);
+        assert!(resolve_src_padding(dst, &src).is_none());
     }
 }
