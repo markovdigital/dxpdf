@@ -740,28 +740,6 @@ fn resolve_anchor_y(
 
 // ── VML position helpers ───────────────────────────────────────────────────
 
-/// True when an `mc:AlternateContent` Choice carries a DrawingML `wps:wsp`
-/// shape that we render directly. In that case the VML `Fallback` is dead
-/// content: its absolute position must not be read (it would otherwise
-/// hijack the header origin — see `find_vml_absolute_position`). Mirrors the
-/// fallback-suppression gate in `fragment::collect`.
-fn choice_renders_wps(ac: &model::AlternateContent) -> bool {
-    use crate::model::{GraphicContent, ImagePlacement, Inline};
-
-    fn walk(inlines: &[Inline]) -> bool {
-        inlines.iter().any(|inline| match inline {
-            Inline::Image(img) => {
-                matches!(img.placement, ImagePlacement::Anchor(_))
-                    && matches!(img.graphic, Some(GraphicContent::WordProcessingShape(_)))
-            }
-            Inline::Hyperlink(link) => walk(&link.content),
-            Inline::Field(f) => walk(&f.content),
-            _ => false,
-        })
-    }
-    ac.choices.iter().any(|c| walk(&c.content))
-}
-
 /// Search an inline (and AlternateContent fallback) for a VML text box with
 /// absolute positioning.
 pub(super) fn find_vml_absolute_position(inline: &model::Inline) -> Option<(Pt, Pt)> {
@@ -772,7 +750,7 @@ pub(super) fn find_vml_absolute_position(inline: &model::Inline) -> Option<(Pt, 
             // meaningful only when we actually render that fallback. When the
             // Choice is a DrawingML shape we render instead, ignore the
             // fallback so its position doesn't become the header's origin.
-            if choice_renders_wps(ac) {
+            if crate::render::layout::choices_render_wps_shape(&ac.choices) {
                 return None;
             }
             if let Some(ref fallback) = ac.fallback {
@@ -965,7 +943,7 @@ fn vml_length_to_pt(len: model::VmlLength) -> Pt {
 
 #[cfg(test)]
 mod tests {
-    use super::{choice_renders_wps, find_vml_absolute_position};
+    use super::find_vml_absolute_position;
     use crate::model::dimension::Dimension;
     use crate::model::geometry::{EdgeInsets, Size};
     use crate::model::{
@@ -973,6 +951,7 @@ mod tests {
         GraphicContent, Image, ImagePlacement, Inline, McChoice, McRequires, TextWrap,
         WordProcessingShape,
     };
+    use crate::render::layout::choices_render_wps_shape;
 
     /// A minimally-populated anchored `wps:wsp` shape (as `Inline::Image`).
     fn anchored_wps_image() -> Image {
@@ -1035,20 +1014,37 @@ mod tests {
     }
 
     #[test]
-    fn choice_renders_wps_detects_anchored_shape() {
-        assert!(choice_renders_wps(&ac_with_wps_choice()));
+    fn choices_render_wps_shape_detects_anchored_shape() {
+        assert!(choices_render_wps_shape(&ac_with_wps_choice().choices));
     }
 
     #[test]
-    fn choice_renders_wps_false_without_shape() {
-        let ac = AlternateContent {
+    fn choices_render_wps_shape_false_without_shape() {
+        let choices = vec![McChoice {
+            requires: McRequires::Wps,
+            content: vec![Inline::InstrText(String::new())],
+        }];
+        assert!(!choices_render_wps_shape(&choices));
+    }
+
+    /// The shared gate must see through a nested `mc:AlternateContent` so it
+    /// agrees with `extract_floating_shapes` (which recurses) about whether a
+    /// wps shape is rendered — otherwise the fallback would still be consulted
+    /// and its position could hijack the header origin.
+    #[test]
+    fn choices_render_wps_shape_recurses_into_nested_alternate_content() {
+        let nested = AlternateContent {
             choices: vec![McChoice {
                 requires: McRequires::Wps,
-                content: vec![Inline::InstrText(String::new())],
+                content: vec![Inline::Image(Box::new(anchored_wps_image()))],
             }],
             fallback: None,
         };
-        assert!(!choice_renders_wps(&ac));
+        let outer = vec![McChoice {
+            requires: McRequires::Wps,
+            content: vec![Inline::AlternateContent(nested)],
+        }];
+        assert!(choices_render_wps_shape(&outer));
     }
 
     /// Regression: when the Choice is a DrawingML shape we render, the VML

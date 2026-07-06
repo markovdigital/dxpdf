@@ -18,6 +18,34 @@ pub mod table;
 use crate::render::dimension::Pt;
 use crate::render::geometry::{PtEdgeInsets, PtSize};
 
+/// MCE §M.2: true when a `<mc:Choice>` in `choices` carries a DrawingML
+/// `wps:wsp` shape we render (an anchored `WordProcessingShape`). In that
+/// case the AlternateContent's `<mc:Fallback>` — the VML equivalent — is
+/// inert: neither its textbox text nor its absolute position may be consumed
+/// (doing so double-renders the text or hijacks the header origin). Recurses
+/// through `Hyperlink`/`Field` wrappers and nested `AlternateContent`, so it
+/// agrees with the branch `build::floating::extract_floating_shapes` actually
+/// renders. Shared by every fallback-suppression decision (`fragment::collect`
+/// text collection and `build::floating` absolute-position probing) so they
+/// can't drift apart.
+pub(crate) fn choices_render_wps_shape(choices: &[crate::model::McChoice]) -> bool {
+    use crate::model::{GraphicContent, ImagePlacement, Inline};
+
+    fn walk(inlines: &[Inline]) -> bool {
+        inlines.iter().any(|inline| match inline {
+            Inline::Image(img) => {
+                matches!(img.placement, ImagePlacement::Anchor(_))
+                    && matches!(img.graphic, Some(GraphicContent::WordProcessingShape(_)))
+            }
+            Inline::Hyperlink(link) => walk(&link.content),
+            Inline::Field(f) => walk(&f.content),
+            Inline::AlternateContent(inner) => choices_render_wps_shape(&inner.choices),
+            _ => false,
+        })
+    }
+    choices.iter().any(|c| walk(&c.content))
+}
+
 /// Box constraints passed from parent to child during layout.
 ///
 /// Encodes the range of permissible widths and heights.
