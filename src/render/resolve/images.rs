@@ -51,11 +51,20 @@ pub fn extract_src_rect(image: &Image) -> Option<crate::render::geometry::PtRect
     if left == 0.0 && top == 0.0 && right == 0.0 && bottom == 0.0 {
         return None;
     }
+    let (visible_w, visible_h) = (1.0 - left - right, 1.0 - top - bottom);
+    // A valid §20.1.10.48 crop leaves a positive visible region. If the insets
+    // overlap (l + r ≥ 1 or t + b ≥ 1) the region collapses to nothing —
+    // malformed input. Draw the whole image (return None) rather than emit a
+    // zero-area src rect, which under `SrcRectConstraint::Strict` paints a blank
+    // frame where the image should be.
+    if visible_w <= 0.0 || visible_h <= 0.0 {
+        return None;
+    }
     Some(PtRect::from_xywh(
         Pt::new(left),
         Pt::new(top),
-        Pt::new((1.0 - left - right).max(0.0)),
-        Pt::new((1.0 - top - bottom).max(0.0)),
+        Pt::new(visible_w),
+        Pt::new(visible_h),
     ))
 }
 
@@ -251,5 +260,36 @@ mod tests {
             (r.size.height.raw() - 0.66470).abs() < 1e-4,
             "visible height"
         );
+    }
+
+    #[test]
+    fn src_rect_none_when_horizontal_crop_collapses_region() {
+        // l + r ≥ 1: the insets overlap, so no visible width remains. Malformed
+        // input must fall back to the whole image (None), not a blank frame.
+        let mut img = make_image_with_blip("rId1");
+        if let Some(GraphicContent::Picture(pic)) = img.graphic.as_mut() {
+            pic.blip_fill.src_rect = Some(RelativeRect {
+                left: Some(Dimension::new(60000)),
+                top: None,
+                right: Some(Dimension::new(60000)),
+                bottom: None,
+            });
+        }
+        assert!(extract_src_rect(&img).is_none());
+    }
+
+    #[test]
+    fn src_rect_none_when_vertical_crop_collapses_region() {
+        // t + b ≥ 1: no visible height remains.
+        let mut img = make_image_with_blip("rId1");
+        if let Some(GraphicContent::Picture(pic)) = img.graphic.as_mut() {
+            pic.blip_fill.src_rect = Some(RelativeRect {
+                left: None,
+                top: Some(Dimension::new(100000)),
+                right: None,
+                bottom: Some(Dimension::new(5000)),
+            });
+        }
+        assert!(extract_src_rect(&img).is_none());
     }
 }
