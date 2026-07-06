@@ -274,6 +274,7 @@ pub fn layout_section(
                         state.current_page.commands.push(DrawCommand::Image {
                             rect: PtRect::from_xywh(fi.x, img_y, fi.size.width, fi.size.height),
                             image_data: fi.image_data.clone(),
+                            src_rect: fi.src_rect,
                         });
                         if y_end > state.cursor_y {
                             state.cursor_y = y_end;
@@ -631,6 +632,7 @@ pub fn layout_section(
                     state.current_page.commands.push(DrawCommand::Image {
                         rect: PtRect::from_xywh(fi.x, img_y, fi.size.width, fi.size.height),
                         image_data: fi.image_data.clone(),
+                        src_rect: fi.src_rect,
                     });
                 }
 

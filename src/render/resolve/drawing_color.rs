@@ -319,7 +319,7 @@ fn hsl_adjust<F: FnOnce(f32, f32, f32) -> (f32, f32, f32)>(c: Rgba, f: F) -> Rgb
 // ── Color space conversions ────────────────────────────────────────────────
 
 fn pct_f32(p: Dimension<ThousandthPercent>) -> f32 {
-    p.raw() as f32 / 100_000.0
+    p.to_fraction()
 }
 
 fn angle_f32(a: Dimension<SixtieThousandthDeg>) -> f32 {

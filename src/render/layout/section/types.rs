@@ -94,6 +94,8 @@ pub struct TableFloatInfo {
 pub struct FloatingImage {
     pub image_data: MediaEntry,
     pub size: PtSize,
+    /// §20.1.10.48 `a:srcRect` — fractional source crop in `[0, 1]`.
+    pub src_rect: Option<crate::render::geometry::PtRect>,
     /// Resolved absolute x position on the page.
     pub x: Pt,
     /// Resolved absolute y position on the page (may be relative to paragraph).

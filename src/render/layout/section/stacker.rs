@@ -79,6 +79,7 @@ pub fn stack_blocks(
                         commands.push(DrawCommand::Image {
                             rect: PtRect::from_xywh(fi.x, img_y, fi.size.width, fi.size.height),
                             image_data: fi.image_data.clone(),
+                            src_rect: fi.src_rect,
                         });
                         if y_end > cursor_y {
                             cursor_y = y_end;
@@ -177,6 +178,7 @@ pub fn stack_blocks(
                     commands.push(DrawCommand::Image {
                         rect: PtRect::from_xywh(fi.x, img_y, fi.size.width, fi.size.height),
                         image_data: fi.image_data.clone(),
+                        src_rect: fi.src_rect,
                     });
                     // Extend cursor to encompass the image so table cells
                     // expand to contain floating images.

@@ -41,6 +41,10 @@ pub enum DrawCommand {
     Image {
         rect: PtRect,
         image_data: MediaEntry,
+        /// §20.1.10.48 `a:srcRect` — fractional source crop in `[0, 1]`
+        /// relative to the image's natural extent, applied before the image
+        /// is stretched into `rect`. `None` draws the whole image.
+        src_rect: Option<PtRect>,
     },
     /// One emoji grapheme cluster placed at `rect`. The painter rasterizes
     /// the cluster against `typeface` (Skia raster backend honours the color
@@ -199,7 +203,10 @@ pub struct ResolvedBlip {
     pub data: Rc<[u8]>,
     pub format: crate::model::ImageFormat,
     /// Fraction of the source to crop: values in `[0, 1]` relative to the
-    /// blip's natural extent.
+    /// blip's natural extent. Derive this from the blip's `a:srcRect` via
+    /// [`crate::render::resolve::images::relative_rect_to_fraction`] — the same
+    /// converter the picture path uses — so cropped fills and cropped pictures
+    /// stay in lockstep.
     pub src_rect: Option<PtRect>,
 }
 

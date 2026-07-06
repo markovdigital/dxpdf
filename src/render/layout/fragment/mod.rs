@@ -8,7 +8,7 @@ use crate::model::{PTabAlignment, PTabRelativeTo, RunProperties, TabLeader, Unde
 use crate::render::dimension::Pt;
 use crate::render::emoji::cluster::{EmojiPresentation, EmojiStructure};
 use crate::render::fonts::TypefaceEntry;
-use crate::render::geometry::PtSize;
+use crate::render::geometry::{PtRect, PtSize};
 use crate::render::resolve::color::RgbColor;
 use crate::render::resolve::fonts::effective_font;
 use crate::render::resolve::images::MediaEntry;
@@ -120,6 +120,8 @@ pub enum Fragment {
         size: PtSize,
         rel_id: String,
         image_data: Option<MediaEntry>,
+        /// §20.1.10.48 `a:srcRect` — fractional source crop in `[0, 1]`.
+        src_rect: Option<PtRect>,
     },
     /// One emoji grapheme cluster (UAX #29) classified as an emoji sequence
     /// (UTS #51), to be rasterized at paint time via Skia's raster backend

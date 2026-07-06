@@ -5,8 +5,8 @@ use std::rc::Rc;
 
 use rustc_hash::FxHashMap;
 use skia_safe::{
-    path_effect::PathEffect, pdf, BlurStyle, Color4f, Data, MaskFilter, Paint, Path, PathBuilder,
-    PathFillType, TextBlob,
+    canvas::SrcRectConstraint, path_effect::PathEffect, pdf, BlurStyle, Color4f, Data, MaskFilter,
+    Paint, Path, PathBuilder, PathFillType, TextBlob,
 };
 
 use crate::render::dimension::Pt;
@@ -30,6 +30,42 @@ const IMAGE_TARGET_DPI: f32 = 300.0;
 /// Conversion factor from PDF points to target pixels.
 const IMAGE_DPI_SCALE: f32 = IMAGE_TARGET_DPI / 72.0;
 
+/// Quantized fractional `srcRect` crop, part of the cache key. Each of
+/// (origin.x, origin.y, size.w, size.h) is scaled by the OOXML
+/// thousandth-percent resolution (100000 = 100%) and rounded, so two crops that
+/// are spec-identical hash alike. `None` marks an uncropped placement.
+type CropKey = Option<(i32, i32, i32, i32)>;
+
+/// Decoded-image cache, keyed by media data-pointer identity, the downsample
+/// target size, **and** the crop baked into the cached bitmap. Two placements
+/// of the same media get distinct entries when they draw at different sizes or
+/// under different `srcRect` crops — each caches its own correctly-scaled,
+/// pre-cropped bitmap, so neither reuses the other's resolution or crop.
+type ImageCacheKey = (*const [u8], i32, i32, CropKey);
+type ImageCache = HashMap<ImageCacheKey, skia_safe::Image>;
+
+/// Downsample target dimensions (in pixels) for a display rect at
+/// `IMAGE_TARGET_DPI`. Shared by the image cache key and the downsample passes
+/// so both agree on the resolution a placement needs.
+fn downsample_target(rect: crate::render::geometry::PtRect) -> (i32, i32) {
+    (
+        (rect.size.width.raw() * IMAGE_DPI_SCALE).ceil() as i32,
+        (rect.size.height.raw() * IMAGE_DPI_SCALE).ceil() as i32,
+    )
+}
+
+/// Quantize a fractional `srcRect` crop for the cache key, at the OOXML
+/// thousandth-percent resolution so spec-identical crops map to one key.
+fn quantize_crop(crop: &crate::render::geometry::PtRect) -> (i32, i32, i32, i32) {
+    let q = |v: f32| (v * 100_000.0).round() as i32;
+    (
+        q(crop.origin.x.raw()),
+        q(crop.origin.y.raw()),
+        q(crop.size.width.raw()),
+        q(crop.size.height.raw()),
+    )
+}
+
 /// Render laid-out pages to PDF bytes via Skia.
 ///
 /// `registry` owns the typeface universe for this render — paint resolves
@@ -46,10 +82,10 @@ pub fn render_to_pdf(
     };
     let mut doc = pdf::new_document(&mut pdf_bytes, Some(&pdf_metadata));
     let mut font_cache = fonts::FontCache::new();
-    // Cache decoded Skia images across pages, keyed by Rc pointer identity.
-    // Avoids re-copying and re-decoding the same image bytes on every page
-    // (e.g. a logo repeated in headers/footers).
-    let mut image_cache: HashMap<*const [u8], skia_safe::Image> = HashMap::new();
+    // Cache decoded Skia images across pages. Avoids re-copying and
+    // re-decoding the same image bytes on every page (e.g. a logo repeated in
+    // headers/footers). See `ImageCache` for the keying.
+    let mut image_cache: ImageCache = HashMap::new();
     // Per-render emoji rasterizer — clusters that recur across pages
     // (footer 📞 etc.) are rasterized once and shared.
     let mut emoji_rasterizer = EmojiRasterizer::default();
@@ -84,7 +120,7 @@ fn render_page(
     page: &LayoutedPage,
     registry: &FontRegistry,
     font_cache: &mut fonts::FontCache,
-    image_cache: &mut HashMap<*const [u8], skia_safe::Image>,
+    image_cache: &mut ImageCache,
     emoji_rasterizer: &mut EmojiRasterizer,
     blob_cache: &mut FxHashMap<usize, FxHashMap<Box<str>, TextBlob>>,
 ) {
@@ -202,16 +238,69 @@ fn render_page(
                 let (start, end) = to_line(*line);
                 canvas.draw_line(start, end, &stroke_paint);
             }
-            DrawCommand::Image { rect, image_data } => {
-                let ptr_key: *const [u8] = Rc::as_ptr(&image_data.data);
-                if let Some(image) = image_cache.get(&ptr_key) {
-                    canvas.draw_image_rect(image, None, to_rect(*rect), &default_paint);
-                } else {
-                    let decoded = decode_image(image_data);
-                    if let Some(image) = decoded {
-                        let image = downsample_if_oversize(image, *rect);
-                        canvas.draw_image_rect(&image, None, to_rect(*rect), &default_paint);
-                        image_cache.insert(ptr_key, image);
+            DrawCommand::Image {
+                rect,
+                image_data,
+                src_rect,
+            } => {
+                // §20.1.10.48: resolve the srcRect against the image bounds. A
+                // region reaching outside the image (negative insets) pads the
+                // frame — it becomes an in-image crop plus a shrunken `dst`,
+                // and the padding band of `dst` is left undrawn. No srcRect →
+                // whole image to the whole dst; a region wholly outside the
+                // image → nothing to draw.
+                let resolved = match src_rect {
+                    None => Some((*rect, None)),
+                    Some(sr) => resolve_src_padding(*rect, sr).map(|(d, c)| (d, Some(c))),
+                };
+                if let Some((draw_rect, crop)) = resolved {
+                    let dst = to_rect(draw_rect);
+                    // Key on (media identity, downsample target for the display
+                    // size, crop). The crop is baked into the cached bitmap
+                    // below, so two placements that differ only in size or in
+                    // `srcRect` each cache their own bitmap.
+                    let (target_w, target_h) = downsample_target(draw_rect);
+                    let key = (
+                        Rc::as_ptr(&image_data.data),
+                        target_w,
+                        target_h,
+                        crop.as_ref().map(quantize_crop),
+                    );
+                    if let Some(image) = image_cache.get(&key) {
+                        // The cached bitmap already has any crop baked in → the
+                        // whole bitmap maps to `dst`.
+                        canvas.draw_image_rect(image, None, dst, &default_paint);
+                    } else if let Some(decoded) = decode_image(image_data) {
+                        match &crop {
+                            // Bake the visible sub-region into a right-sized
+                            // bitmap so the PDF never carries the cropped-away
+                            // pixels at full resolution (finding 3).
+                            Some(crop) => match prepare_cropped(&decoded, crop, draw_rect) {
+                                Some(image) => {
+                                    canvas.draw_image_rect(&image, None, dst, &default_paint);
+                                    image_cache.insert(key, image);
+                                }
+                                // Near-OOM: the raster surface could not be
+                                // allocated. Fall back to a draw-time crop of
+                                // the full image — correct pixels, just
+                                // unoptimized — and leave it uncached (the key
+                                // implies a baked crop).
+                                None => {
+                                    let src = src_pixel_rect(&decoded, crop);
+                                    canvas.draw_image_rect(
+                                        &decoded,
+                                        Some((&src, SrcRectConstraint::Strict)),
+                                        dst,
+                                        &default_paint,
+                                    );
+                                }
+                            },
+                            None => {
+                                let image = downsample_if_oversize(decoded, draw_rect);
+                                canvas.draw_image_rect(&image, None, dst, &default_paint);
+                                image_cache.insert(key, image);
+                            }
+                        }
                     } else {
                         let magic = &image_data.data[..image_data.data.len().min(4)];
                         log::warn!(
@@ -560,8 +649,7 @@ fn downsample_if_oversize(
     use skia_safe::CubicResampler;
     use skia_safe::{AlphaType, ColorType, ImageInfo, SamplingOptions};
 
-    let target_w = (rect.size.width.raw() * IMAGE_DPI_SCALE).ceil() as i32;
-    let target_h = (rect.size.height.raw() * IMAGE_DPI_SCALE).ceil() as i32;
+    let (target_w, target_h) = downsample_target(rect);
     if image.width() > target_w && image.height() > target_h && target_w > 0 && target_h > 0 {
         log::debug!(
             "[paint] downsampling image {}×{} → {}×{} (display {:.0}×{:.0}pt @ {:.0} DPI)",
@@ -598,6 +686,121 @@ fn downsample_if_oversize(
     } else {
         image
     }
+}
+
+/// The visible sub-rectangle in the image's own pixel space, from the
+/// fractional `srcRect` crop (§20.1.10.48).
+fn src_pixel_rect(
+    image: &skia_safe::Image,
+    crop: &crate::render::geometry::PtRect,
+) -> skia_safe::Rect {
+    let (iw, ih) = (image.width() as f32, image.height() as f32);
+    skia_safe::Rect::from_xywh(
+        crop.origin.x.raw() * iw,
+        crop.origin.y.raw() * ih,
+        crop.size.width.raw() * iw,
+        crop.size.height.raw() * ih,
+    )
+}
+
+/// Crop `image` to the fractional visible region (`src_rect`, §20.1.10.48) and
+/// scale that region to the display target resolution in one Mitchell pass.
+///
+/// Baking the crop into the bitmap means only the visible pixels are embedded:
+/// a heavy crop no longer carries its cropped-away pixels into the PDF at full
+/// resolution (finding 3). The result maps whole → destination at draw time.
+/// The surface is capped at the visible region's own pixel count, so a
+/// magnifying crop is not upsampled, and at the display target, so a
+/// high-resolution crop is downsampled.
+///
+/// Returns `None` only if the raster surface can't be allocated (near-OOM); the
+/// caller then falls back to a draw-time crop of the full image.
+fn prepare_cropped(
+    image: &skia_safe::Image,
+    src_rect: &crate::render::geometry::PtRect,
+    display: crate::render::geometry::PtRect,
+) -> Option<skia_safe::Image> {
+    use skia_safe::{AlphaType, ColorType, CubicResampler, ImageInfo, SamplingOptions};
+
+    let src = src_pixel_rect(image, src_rect);
+    // Never allocate more pixels than the visible region provides (no upsample)
+    // nor more than the display needs at target DPI (no bloat).
+    let (disp_w, disp_h) = downsample_target(display);
+    let target_w = disp_w.min(src.width().round() as i32).max(1);
+    let target_h = disp_h.min(src.height().round() as i32).max(1);
+
+    // Preserve the source's opacity: an opaque image encodes as JPEG
+    // (encoding_quality); a transparent one keeps its alpha (lossless).
+    let alpha = if image.alpha_type() == AlphaType::Opaque {
+        AlphaType::Opaque
+    } else {
+        AlphaType::Premul
+    };
+    let info = ImageInfo::new((target_w, target_h), ColorType::RGBA8888, alpha, None);
+    let sampling = SamplingOptions::from(CubicResampler::mitchell());
+    let mut surface = skia_safe::surfaces::raster(&info, None, None)?;
+    let dst = skia_safe::Rect::from_iwh(target_w, target_h);
+    surface.canvas().draw_image_rect_with_sampling_options(
+        image,
+        Some((&src, SrcRectConstraint::Strict)),
+        dst,
+        sampling,
+        &Paint::default(),
+    );
+    Some(surface.image_snapshot())
+}
+
+/// Resolve an `a:srcRect` region against the image bounds for painting
+/// (§20.1.10.48). The fractional region `[origin, origin + size]` maps linearly
+/// onto `dst`. When it reaches outside the image's `[0, 1]` extent — negative
+/// insets, i.e. letterbox/pillarbox padding — the outside area is *empty*, not
+/// clipped: clamp the region to the image and shrink `dst` to the
+/// sub-rectangle the clamped region maps onto, so the padding band of `dst` is
+/// simply left undrawn (transparent) instead of `Strict` sampling stretching
+/// the image over it.
+///
+/// Returns the in-bounds `(dst, crop)` to draw, or `None` when the region lies
+/// wholly outside the image (nothing visible). An already in-bounds region
+/// comes back with `dst` and `crop` unchanged.
+fn resolve_src_padding(
+    dst: crate::render::geometry::PtRect,
+    src: &crate::render::geometry::PtRect,
+) -> Option<(
+    crate::render::geometry::PtRect,
+    crate::render::geometry::PtRect,
+)> {
+    use crate::render::geometry::PtRect;
+
+    let (sx0, sy0) = (src.origin.x.raw(), src.origin.y.raw());
+    let (sw, sh) = (src.size.width.raw(), src.size.height.raw());
+    if sw <= 0.0 || sh <= 0.0 {
+        return None;
+    }
+    let (sx1, sy1) = (sx0 + sw, sy0 + sh);
+    // Clamp the source region to the image extent [0, 1].
+    let (cx0, cy0) = (sx0.max(0.0), sy0.max(0.0));
+    let (cx1, cy1) = (sx1.min(1.0), sy1.min(1.0));
+    if cx1 <= cx0 || cy1 <= cy0 {
+        return None; // wholly outside the image
+    }
+    // Fraction of `dst` the clamped region covers (0 at the region's own edge).
+    let (tx0, tx1) = ((cx0 - sx0) / sw, (cx1 - sx0) / sw);
+    let (ty0, ty1) = ((cy0 - sy0) / sh, (cy1 - sy0) / sh);
+    let (dx, dy) = (dst.origin.x.raw(), dst.origin.y.raw());
+    let (dw, dh) = (dst.size.width.raw(), dst.size.height.raw());
+    let inset_dst = PtRect::from_xywh(
+        Pt::new(dx + tx0 * dw),
+        Pt::new(dy + ty0 * dh),
+        Pt::new((tx1 - tx0) * dw),
+        Pt::new((ty1 - ty0) * dh),
+    );
+    let crop = PtRect::from_xywh(
+        Pt::new(cx0),
+        Pt::new(cy0),
+        Pt::new(cx1 - cx0),
+        Pt::new(cy1 - cy0),
+    );
+    Some((inset_dst, crop))
 }
 
 #[cfg(test)]
@@ -804,5 +1007,128 @@ mod tests {
 
         let pdf_bytes = render_to_pdf(&[page], &registry).expect("unicode text must not panic");
         assert_eq!(&pdf_bytes[..5], b"%PDF-");
+    }
+
+    // ── image cache keying ──────────────────────────────────────────
+
+    fn rect(w: f32, h: f32) -> crate::render::geometry::PtRect {
+        crate::render::geometry::PtRect::from_xywh(Pt::ZERO, Pt::ZERO, Pt::new(w), Pt::new(h))
+    }
+
+    #[test]
+    fn downsample_target_scales_points_to_target_dpi() {
+        // 72pt @ 300 DPI = 300px; 36pt = 150px.
+        assert_eq!(downsample_target(rect(72.0, 36.0)), (300, 150));
+    }
+
+    #[test]
+    fn quantize_crop_distinguishes_crops_but_matches_spec_identical_ones() {
+        let a = crate::render::geometry::PtRect::from_xywh(
+            Pt::new(0.25),
+            Pt::new(0.25),
+            Pt::new(0.5),
+            Pt::new(0.5),
+        );
+        let b = crate::render::geometry::PtRect::from_xywh(
+            Pt::new(0.1),
+            Pt::new(0.1),
+            Pt::new(0.8),
+            Pt::new(0.8),
+        );
+        // Different crops key differently, so one placement can't reuse the
+        // other's pre-cropped bitmap; an identical crop keys the same.
+        assert_ne!(quantize_crop(&a), quantize_crop(&b));
+        assert_eq!(quantize_crop(&a), quantize_crop(&a));
+        // 50% == 50000 thousandth-percent.
+        assert_eq!(quantize_crop(&a), (25000, 25000, 50000, 50000));
+    }
+
+    /// Opaque solid-color test image of the given pixel dimensions.
+    fn solid_image(w: i32, h: i32) -> skia_safe::Image {
+        use skia_safe::{AlphaType, ColorType, ImageInfo};
+        let info = ImageInfo::new((w, h), ColorType::RGBA8888, AlphaType::Opaque, None);
+        let mut surface = skia_safe::surfaces::raster(&info, None, None).expect("raster surface");
+        surface.canvas().clear(Color4f::new(0.1, 0.2, 0.3, 1.0));
+        surface.image_snapshot()
+    }
+
+    #[test]
+    fn prepare_cropped_embeds_only_the_visible_region_not_the_whole_image() {
+        // 1000×1000 source, cropped to the middle 10%×10% → a 100×100 visible
+        // region. Displayed at 72pt (300px @ 300 DPI), but the visible region
+        // only has 100px, so we don't upsample — the baked bitmap is 100×100,
+        // NOT the full 1000×1000 (finding 3: no cropped-away pixels embedded).
+        let src = solid_image(1000, 1000);
+        let crop = crate::render::geometry::PtRect::from_xywh(
+            Pt::new(0.45),
+            Pt::new(0.45),
+            Pt::new(0.1),
+            Pt::new(0.1),
+        );
+        let out = prepare_cropped(&src, &crop, rect(72.0, 72.0)).expect("prepare");
+        assert_eq!((out.width(), out.height()), (100, 100));
+    }
+
+    #[test]
+    fn prepare_cropped_downsamples_a_high_res_crop_to_the_display_target() {
+        // 4000×4000 source, cropped to the middle 50% → a 2000×2000 visible
+        // region, displayed at 72pt. The region has more pixels than the
+        // display needs (300px @ 300 DPI), so it downsamples to 300×300.
+        let src = solid_image(4000, 4000);
+        let crop = crate::render::geometry::PtRect::from_xywh(
+            Pt::new(0.25),
+            Pt::new(0.25),
+            Pt::new(0.5),
+            Pt::new(0.5),
+        );
+        let out = prepare_cropped(&src, &crop, rect(72.0, 72.0)).expect("prepare");
+        assert_eq!((out.width(), out.height()), (300, 300));
+    }
+
+    // ── srcRect padding resolution ──────────────────────────────────
+
+    fn xywh(x: f32, y: f32, w: f32, h: f32) -> crate::render::geometry::PtRect {
+        crate::render::geometry::PtRect::from_xywh(Pt::new(x), Pt::new(y), Pt::new(w), Pt::new(h))
+    }
+
+    #[test]
+    fn resolve_src_padding_is_a_no_op_for_an_in_bounds_crop() {
+        // A crop fully inside [0,1] leaves dst unchanged and the crop as-is.
+        let dst = rect(100.0, 50.0);
+        let crop = xywh(0.1, 0.2, 0.5, 0.6);
+        let (out_dst, out_crop) = resolve_src_padding(dst, &crop).expect("visible");
+        assert_eq!(out_dst.origin.x.raw(), 0.0);
+        assert_eq!(out_dst.origin.y.raw(), 0.0);
+        assert_eq!(out_dst.size.width.raw(), 100.0);
+        assert_eq!(out_dst.size.height.raw(), 50.0);
+        assert!((out_crop.origin.x.raw() - 0.1).abs() < 1e-5);
+        assert!((out_crop.size.width.raw() - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn resolve_src_padding_insets_dst_and_clamps_crop_for_negative_insets() {
+        // srcRect region [-0.2, 1.2] horizontally (left = right = -0.2 → 20%
+        // pillarbox padding each side), full height. The whole image is drawn
+        // into the middle of dst; the side bands are left undrawn.
+        let dst = xywh(0.0, 0.0, 100.0, 100.0);
+        let src = xywh(-0.2, 0.0, 1.4, 1.0);
+        let (out_dst, out_crop) = resolve_src_padding(dst, &src).expect("visible");
+        // Clamped source region is the full image.
+        assert!((out_crop.origin.x.raw() - 0.0).abs() < 1e-5);
+        assert!((out_crop.size.width.raw() - 1.0).abs() < 1e-5);
+        // dst inset by 0.2/1.4 ≈ 14.29% on the left, width 1.0/1.4 ≈ 71.43%.
+        assert!((out_dst.origin.x.raw() - 100.0 * 0.2 / 1.4).abs() < 1e-3);
+        assert!((out_dst.size.width.raw() - 100.0 * 1.0 / 1.4).abs() < 1e-3);
+        // Vertical is untouched (region already in-bounds).
+        assert_eq!(out_dst.origin.y.raw(), 0.0);
+        assert_eq!(out_dst.size.height.raw(), 100.0);
+    }
+
+    #[test]
+    fn resolve_src_padding_returns_none_when_region_is_wholly_outside() {
+        // Region starts past the right edge of the image → nothing visible.
+        let dst = rect(100.0, 100.0);
+        let src = xywh(1.5, 0.0, 0.3, 1.0);
+        assert!(resolve_src_padding(dst, &src).is_none());
     }
 }

@@ -187,7 +187,11 @@ impl Dimension<EighthPoints> {
 
 impl Dimension<ThousandthPercent> {
     /// Returns the percentage as a fraction (e.g., 50000 → 0.5).
-    pub fn to_fraction(self) -> f64 {
-        self.raw as f64 / 100_000.0
+    ///
+    /// The single home for the ST_Percentage / CT_RelativeRect scale (100% =
+    /// 100000); every consumer that needs a `[0, 1]` fraction routes through
+    /// here rather than open-coding the divisor.
+    pub fn to_fraction(self) -> f32 {
+        self.raw as f32 / 100_000.0
     }
 }

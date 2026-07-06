@@ -120,6 +120,7 @@ pub(super) fn extract_floating_images(
         images.push(FloatingImage {
             image_data,
             size: PtSize::new(w, h),
+            src_rect: crate::render::resolve::images::extract_src_rect(img),
             x,
             y,
             wrap_mode: crate::render::layout::section::WrapMode::from_model(&anchor.wrap),
@@ -379,6 +380,8 @@ fn build_vml_floating_image(
     Some(FloatingImage {
         image_data,
         size: PtSize::new(width, height),
+        // VML crops (`v:imagedata` crop*) are a separate mechanism; not modelled.
+        src_rect: None,
         x,
         y: FloatingImageY::RelativeToParagraph(y),
         wrap_mode: WrapMode::None,
@@ -743,6 +746,13 @@ pub(super) fn find_vml_absolute_position(inline: &model::Inline) -> Option<(Pt, 
     match inline {
         model::Inline::Pict(pict) => find_vml_pos_in_pict(pict),
         model::Inline::AlternateContent(ac) => {
+            // Only the VML fallback carries an absolute position, and it is
+            // meaningful only when we actually render that fallback. When the
+            // Choice is a DrawingML shape we render instead, ignore the
+            // fallback so its position doesn't become the header's origin.
+            if crate::render::layout::choices_render_wps_shape(&ac.choices) {
+                return None;
+            }
             if let Some(ref fallback) = ac.fallback {
                 for inner in fallback {
                     if let Some(pos) = find_vml_absolute_position(inner) {
@@ -929,4 +939,120 @@ fn vml_length_to_pt(len: model::VmlLength) -> Pt {
         VmlLengthUnit::None => value / 914400.0 * 72.0, // bare number = EMU
         _ => value,                        // Em, Percent — fallback to raw value
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_vml_absolute_position;
+    use crate::model::dimension::Dimension;
+    use crate::model::geometry::{EdgeInsets, Size};
+    use crate::model::{
+        AlternateContent, AnchorPosition, AnchorProperties, AnchorRelativeFrom, DocProperties,
+        GraphicContent, Image, ImagePlacement, Inline, McChoice, McRequires, TextWrap,
+        WordProcessingShape,
+    };
+    use crate::render::layout::choices_render_wps_shape;
+
+    /// A minimally-populated anchored `wps:wsp` shape (as `Inline::Image`).
+    fn anchored_wps_image() -> Image {
+        Image {
+            extent: Size::new(Dimension::new(0), Dimension::new(0)),
+            effect_extent: None,
+            doc_properties: DocProperties {
+                id: 1,
+                name: "shape".into(),
+                description: None,
+                hidden: None,
+                title: None,
+            },
+            graphic_frame_locks: None,
+            graphic: Some(GraphicContent::WordProcessingShape(WordProcessingShape {
+                cnv_pr: None,
+                shape_properties: None,
+                style_line_ref: None,
+                style_effect_ref: None,
+                body_pr: None,
+                txbx_content: vec![],
+            })),
+            placement: ImagePlacement::Anchor(AnchorProperties {
+                distance: EdgeInsets::new(
+                    Dimension::new(0),
+                    Dimension::new(0),
+                    Dimension::new(0),
+                    Dimension::new(0),
+                ),
+                simple_pos: None,
+                use_simple_pos: None,
+                horizontal_position: AnchorPosition::Offset {
+                    relative_from: AnchorRelativeFrom::Margin,
+                    offset: Dimension::new(0),
+                },
+                vertical_position: AnchorPosition::Offset {
+                    relative_from: AnchorRelativeFrom::Paragraph,
+                    offset: Dimension::new(0),
+                },
+                wrap: TextWrap::None,
+                behind_text: false,
+                lock_anchor: false,
+                allow_overlap: true,
+                relative_height: 0,
+                layout_in_cell: None,
+                hidden: None,
+            }),
+        }
+    }
+
+    fn ac_with_wps_choice() -> AlternateContent {
+        AlternateContent {
+            choices: vec![McChoice {
+                requires: McRequires::Wps,
+                content: vec![Inline::Image(Box::new(anchored_wps_image()))],
+            }],
+            // A non-empty fallback that would otherwise be searched.
+            fallback: Some(vec![Inline::InstrText(String::new())]),
+        }
+    }
+
+    #[test]
+    fn choices_render_wps_shape_detects_anchored_shape() {
+        assert!(choices_render_wps_shape(&ac_with_wps_choice().choices));
+    }
+
+    #[test]
+    fn choices_render_wps_shape_false_without_shape() {
+        let choices = vec![McChoice {
+            requires: McRequires::Wps,
+            content: vec![Inline::InstrText(String::new())],
+        }];
+        assert!(!choices_render_wps_shape(&choices));
+    }
+
+    /// The shared gate must see through a nested `mc:AlternateContent` so it
+    /// agrees with `extract_floating_shapes` (which recurses) about whether a
+    /// wps shape is rendered — otherwise the fallback would still be consulted
+    /// and its position could hijack the header origin.
+    #[test]
+    fn choices_render_wps_shape_recurses_into_nested_alternate_content() {
+        let nested = AlternateContent {
+            choices: vec![McChoice {
+                requires: McRequires::Wps,
+                content: vec![Inline::Image(Box::new(anchored_wps_image()))],
+            }],
+            fallback: None,
+        };
+        let outer = vec![McChoice {
+            requires: McRequires::Wps,
+            content: vec![Inline::AlternateContent(nested)],
+        }];
+        assert!(choices_render_wps_shape(&outer));
+    }
+
+    /// Regression: when the Choice is a DrawingML shape we render, the VML
+    /// fallback's absolute position must be ignored — otherwise it hijacks
+    /// the header origin and pushes paragraph-anchored content off-page.
+    #[test]
+    fn wps_choice_suppresses_fallback_absolute_position() {
+        let inline = Inline::AlternateContent(ac_with_wps_choice());
+        assert!(find_vml_absolute_position(&inline).is_none());
+    }
 }
