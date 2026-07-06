@@ -13,7 +13,7 @@ use super::draw_command::DrawCommand;
 use super::fragment::Fragment;
 use super::BoxConstraints;
 use crate::render::dimension::Pt;
-use crate::render::geometry::{PtOffset, PtSize};
+use crate::render::geometry::{PtOffset, PtRect, PtSize};
 
 use borders::emit_paragraph_borders_and_shading;
 use line_emit::{
@@ -50,6 +50,73 @@ struct LineLayoutParams {
     drop_cap_indent: Pt,
     drop_cap_lines: usize,
     default_line_height: Pt,
+}
+
+/// Clip inline images wider than `max_width` to the content box, cropping the
+/// horizontal overflow rather than scaling.
+///
+/// Per ECMA-376 §20.4.2.7, a `wp:inline` object's `wp:extent` is its *final*
+/// height and width — an inline object is **not** auto-scaled to fit its
+/// container. When it is wider than the containing table cell (§17.4.53: an
+/// autofit table at 100% width cannot grow its column), Word draws the image at
+/// full size and clips the overflow to the cell boundary.
+///
+/// The retained slice is the **left** part of the object. An inline object that
+/// is already wider than the line is placed at the line's start: justification
+/// (§17.3.1.13 `w:jc`) distributes only *spare* width, and an over-wide object
+/// leaves none — Word does not centre or right-shift it — so it overflows to
+/// the right and the cell clips that side. (Our own line fitter agrees: it
+/// clamps the alignment offset to `max(0)`.) We reproduce that by keeping the
+/// image's height and scale, setting its displayed width to `max_width`, and
+/// cropping the source to the left visible fraction, composed with any existing
+/// `a:srcRect` crop — no symmetric/centre crop, which would shift the pixels.
+///
+/// Returns `None` when nothing is oversized, so the common case borrows the
+/// input slice and allocates nothing.
+fn clip_oversized_images(fragments: &[Fragment], max_width: Pt) -> Option<Vec<Fragment>> {
+    let oversized =
+        |f: &Fragment| matches!(f, Fragment::Image { size, .. } if size.width > max_width);
+    if max_width <= Pt::ZERO || !fragments.iter().any(oversized) {
+        return None;
+    }
+    Some(
+        fragments
+            .iter()
+            .map(|f| match f {
+                Fragment::Image {
+                    size,
+                    rel_id,
+                    image_data,
+                    src_rect,
+                } if size.width > max_width => {
+                    // Fraction of the object's width that survives the clip.
+                    let visible = max_width.raw() / size.width.raw();
+                    // Start from the existing crop (fraction of the source), or
+                    // the whole image, then keep its left `visible` sub-fraction
+                    // — same origin, narrower width (crop the right overflow).
+                    let base = src_rect.unwrap_or_else(|| {
+                        PtRect::from_xywh(Pt::ZERO, Pt::ZERO, Pt::new(1.0), Pt::new(1.0))
+                    });
+                    let cropped = PtRect::from_xywh(
+                        base.origin.x,
+                        base.origin.y,
+                        Pt::new(base.size.width.raw() * visible),
+                        base.size.height,
+                    );
+                    Fragment::Image {
+                        // Height and scale are unchanged (§20.4.2.7); only the
+                        // displayed width shrinks, showing the left, un-clipped
+                        // part.
+                        size: PtSize::new(max_width, size.height),
+                        rel_id: rel_id.clone(),
+                        image_data: image_data.clone(),
+                        src_rect: Some(cropped),
+                    }
+                }
+                other => other.clone(),
+            })
+            .collect(),
+    )
 }
 
 /// Lay out a paragraph: fit fragments into lines, apply alignment and spacing.
@@ -101,6 +168,18 @@ pub fn layout_paragraph(
     // Positive = narrower (indent), negative = wider (hanging indent).
     // Drop cap indent also reduces width for the first N lines.
     let first_line_adjustment = style.indent_first_line + drop_cap_indent;
+
+    // Clip inline images wider than the content box to the cell/page width,
+    // cropping the overflow the way Word does (§20.4.2.7: the extent is the
+    // object's final size, so it is not scaled to fit — the cell clips it).
+    let clipped_frags;
+    let fragments: &[Fragment] = match clip_oversized_images(fragments, content_width) {
+        Some(v) => {
+            clipped_frags = v;
+            &clipped_frags
+        }
+        None => fragments,
+    };
 
     // Split oversized text fragments into per-character fragments so narrow
     // cells get character-level line breaking.
@@ -268,6 +347,80 @@ mod tests {
 
     fn body_constraints(width: f32) -> BoxConstraints {
         BoxConstraints::new(Pt::ZERO, Pt::new(width), Pt::ZERO, Pt::new(1000.0))
+    }
+
+    fn image_frag(w: f32, h: f32) -> Fragment {
+        Fragment::Image {
+            size: PtSize::new(Pt::new(w), Pt::new(h)),
+            rel_id: "rId1".to_string(),
+            image_data: None,
+            src_rect: None,
+        }
+    }
+
+    fn clipped_src(frag: &Fragment) -> (PtSize, PtRect) {
+        match frag {
+            Fragment::Image { size, src_rect, .. } => (*size, src_rect.expect("crop applied")),
+            other => panic!("expected image, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clip_oversized_image_crops_left_keeps_height_and_scale() {
+        // 200×100 image in a 100pt content box → keep the LEFT 50% of the
+        // width, full height. Height is UNCHANGED (not scaled) — a crop, not a
+        // fit — and the crop is left-anchored (origin.x stays 0), so the right
+        // overflow is what gets clipped, matching Word.
+        let frags = vec![image_frag(200.0, 100.0)];
+        let out = clip_oversized_images(&frags, Pt::new(100.0)).expect("clip");
+        let (size, crop) = clipped_src(&out[0]);
+        assert_eq!(size.width.raw(), 100.0);
+        assert_eq!(size.height.raw(), 100.0, "height must NOT change");
+        assert!(
+            (crop.origin.x.raw() - 0.0).abs() < 1e-4,
+            "left-anchored, not centred"
+        );
+        assert!((crop.size.width.raw() - 0.5).abs() < 1e-4);
+        assert!((crop.size.height.raw() - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn clip_oversized_image_composes_with_existing_src_rect() {
+        // Image already cropped to [0.1, 0.9] (width 0.8); clipping to 50% keeps
+        // the left 0.4 of the source, at the existing origin.
+        let mut frag = image_frag(200.0, 100.0);
+        if let Fragment::Image { src_rect, .. } = &mut frag {
+            *src_rect = Some(PtRect::from_xywh(
+                Pt::new(0.1),
+                Pt::ZERO,
+                Pt::new(0.8),
+                Pt::new(1.0),
+            ));
+        }
+        let out = clip_oversized_images(&[frag], Pt::new(100.0)).expect("clip");
+        let crop = clipped_src(&out[0]).1;
+        assert!((crop.origin.x.raw() - 0.1).abs() < 1e-4);
+        assert!((crop.size.width.raw() - 0.4).abs() < 1e-4);
+    }
+
+    #[test]
+    fn clip_oversized_images_leaves_a_fitting_image_untouched() {
+        // Narrower than the content box → not oversized → borrow, no allocation.
+        let frags = vec![image_frag(163.0, 290.0)];
+        assert!(clip_oversized_images(&frags, Pt::new(499.0)).is_none());
+    }
+
+    #[test]
+    fn clip_oversized_images_ignores_wide_non_image_fragments() {
+        // Oversized text is handled by split_oversized_fragments, not here.
+        let frags = vec![text_frag("very wide text", 999.0)];
+        assert!(clip_oversized_images(&frags, Pt::new(100.0)).is_none());
+    }
+
+    #[test]
+    fn clip_oversized_images_guards_nonpositive_width() {
+        let frags = vec![image_frag(516.0, 290.0)];
+        assert!(clip_oversized_images(&frags, Pt::ZERO).is_none());
     }
 
     #[test]

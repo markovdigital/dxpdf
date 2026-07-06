@@ -30,17 +30,23 @@ const IMAGE_TARGET_DPI: f32 = 300.0;
 /// Conversion factor from PDF points to target pixels.
 const IMAGE_DPI_SCALE: f32 = IMAGE_TARGET_DPI / 72.0;
 
-/// Decoded-image cache, keyed by media data-pointer identity **and** the
-/// downsample target size. Keying on the target (not the pointer alone) means
-/// the same media placed at two different sizes — or the same size with
-/// different `srcRect` crops, since a crop inflates the target — each caches
-/// its own appropriately-scaled bitmap. Keying by pointer alone would let a
-/// second placement reuse the first's resolution and render blurry.
-type ImageCache = HashMap<(*const [u8], i32, i32), skia_safe::Image>;
+/// Quantized fractional `srcRect` crop, part of the cache key. Each of
+/// (origin.x, origin.y, size.w, size.h) is scaled by the OOXML
+/// thousandth-percent resolution (100000 = 100%) and rounded, so two crops that
+/// are spec-identical hash alike. `None` marks an uncropped placement.
+type CropKey = Option<(i32, i32, i32, i32)>;
+
+/// Decoded-image cache, keyed by media data-pointer identity, the downsample
+/// target size, **and** the crop baked into the cached bitmap. Two placements
+/// of the same media get distinct entries when they draw at different sizes or
+/// under different `srcRect` crops — each caches its own correctly-scaled,
+/// pre-cropped bitmap, so neither reuses the other's resolution or crop.
+type ImageCacheKey = (*const [u8], i32, i32, CropKey);
+type ImageCache = HashMap<ImageCacheKey, skia_safe::Image>;
 
 /// Downsample target dimensions (in pixels) for a display rect at
-/// `IMAGE_TARGET_DPI`. Shared by the image cache key and
-/// `downsample_if_oversize` so both agree on the resolution a placement needs.
+/// `IMAGE_TARGET_DPI`. Shared by the image cache key and the downsample passes
+/// so both agree on the resolution a placement needs.
 fn downsample_target(rect: crate::render::geometry::PtRect) -> (i32, i32) {
     (
         (rect.size.width.raw() * IMAGE_DPI_SCALE).ceil() as i32,
@@ -48,26 +54,16 @@ fn downsample_target(rect: crate::render::geometry::PtRect) -> (i32, i32) {
     )
 }
 
-/// The display rect scaled up by the inverse of the visible `srcRect`
-/// fraction, so the downsample keeps the *cropped* region at target DPI (a
-/// heavy crop magnifies few source pixels into the frame, so it needs more of
-/// them). No crop, or a degenerate zero-size crop, leaves the display rect
-/// unchanged.
-fn crop_adjusted_downsample_rect(
-    rect: &crate::render::geometry::PtRect,
-    src_rect: &Option<crate::render::geometry::PtRect>,
-) -> crate::render::geometry::PtRect {
-    match src_rect {
-        Some(c) if c.size.width.raw() > 0.0 && c.size.height.raw() > 0.0 => {
-            crate::render::geometry::PtRect::from_xywh(
-                rect.origin.x,
-                rect.origin.y,
-                Pt::new(rect.size.width.raw() / c.size.width.raw()),
-                Pt::new(rect.size.height.raw() / c.size.height.raw()),
-            )
-        }
-        _ => *rect,
-    }
+/// Quantize a fractional `srcRect` crop for the cache key, at the OOXML
+/// thousandth-percent resolution so spec-identical crops map to one key.
+fn quantize_crop(crop: &crate::render::geometry::PtRect) -> (i32, i32, i32, i32) {
+    let q = |v: f32| (v * 100_000.0).round() as i32;
+    (
+        q(crop.origin.x.raw()),
+        q(crop.origin.y.raw()),
+        q(crop.size.width.raw()),
+        q(crop.size.height.raw()),
+    )
 }
 
 /// Render laid-out pages to PDF bytes via Skia.
@@ -248,41 +244,52 @@ fn render_page(
                 src_rect,
             } => {
                 let dst = to_rect(*rect);
-                // §20.1.10.48: draw only the cropped source sub-rectangle
-                // (in the image's own pixel space), stretched to `dst`.
-                let draw = |image: &skia_safe::Image| match src_rect {
-                    Some(crop) => {
-                        let (iw, ih) = (image.width() as f32, image.height() as f32);
-                        let src = skia_safe::Rect::from_xywh(
-                            crop.origin.x.raw() * iw,
-                            crop.origin.y.raw() * ih,
-                            crop.size.width.raw() * iw,
-                            crop.size.height.raw() * ih,
-                        );
-                        canvas.draw_image_rect(
-                            image,
-                            Some((&src, SrcRectConstraint::Strict)),
-                            dst,
-                            &default_paint,
-                        );
-                    }
-                    None => {
-                        canvas.draw_image_rect(image, None, dst, &default_paint);
-                    }
-                };
-                // Size the downsample to the pre-crop extent, then key the
-                // cache on (media identity, that target) so a different-size or
-                // different-crop placement of the same media does not reuse
-                // this placement's resolution.
-                let downsample_rect = crop_adjusted_downsample_rect(rect, src_rect);
-                let (target_w, target_h) = downsample_target(downsample_rect);
-                let key = (Rc::as_ptr(&image_data.data), target_w, target_h);
+                // Key on (media identity, downsample target for the display
+                // size, crop). The crop is part of the key because it is baked
+                // into the cached bitmap below, so two placements that differ
+                // only in size or in `srcRect` each cache their own bitmap.
+                let (target_w, target_h) = downsample_target(*rect);
+                let key = (
+                    Rc::as_ptr(&image_data.data),
+                    target_w,
+                    target_h,
+                    src_rect.as_ref().map(quantize_crop),
+                );
                 if let Some(image) = image_cache.get(&key) {
-                    draw(image);
-                } else if let Some(image) = decode_image(image_data) {
-                    let image = downsample_if_oversize(image, downsample_rect);
-                    draw(&image);
-                    image_cache.insert(key, image);
+                    // The cached bitmap already has any crop baked in → the
+                    // whole bitmap maps to `dst`.
+                    canvas.draw_image_rect(image, None, dst, &default_paint);
+                } else if let Some(decoded) = decode_image(image_data) {
+                    match src_rect {
+                        // §20.1.10.48: bake the visible sub-region into a
+                        // right-sized bitmap so the PDF never carries the
+                        // cropped-away pixels at full resolution (finding 3).
+                        Some(crop) => match prepare_cropped(&decoded, crop, *rect) {
+                            Some(image) => {
+                                canvas.draw_image_rect(&image, None, dst, &default_paint);
+                                image_cache.insert(key, image);
+                            }
+                            // Near-OOM: the raster surface could not be
+                            // allocated. Fall back to a draw-time crop of the
+                            // full image — correct pixels, just unoptimized —
+                            // and leave it uncached (the key implies a baked
+                            // crop).
+                            None => {
+                                let src = src_pixel_rect(&decoded, crop);
+                                canvas.draw_image_rect(
+                                    &decoded,
+                                    Some((&src, SrcRectConstraint::Strict)),
+                                    dst,
+                                    &default_paint,
+                                );
+                            }
+                        },
+                        None => {
+                            let image = downsample_if_oversize(decoded, *rect);
+                            canvas.draw_image_rect(&image, None, dst, &default_paint);
+                            image_cache.insert(key, image);
+                        }
+                    }
                 } else {
                     let magic = &image_data.data[..image_data.data.len().min(4)];
                     log::warn!(
@@ -669,6 +676,68 @@ fn downsample_if_oversize(
     }
 }
 
+/// The visible sub-rectangle in the image's own pixel space, from the
+/// fractional `srcRect` crop (§20.1.10.48).
+fn src_pixel_rect(
+    image: &skia_safe::Image,
+    crop: &crate::render::geometry::PtRect,
+) -> skia_safe::Rect {
+    let (iw, ih) = (image.width() as f32, image.height() as f32);
+    skia_safe::Rect::from_xywh(
+        crop.origin.x.raw() * iw,
+        crop.origin.y.raw() * ih,
+        crop.size.width.raw() * iw,
+        crop.size.height.raw() * ih,
+    )
+}
+
+/// Crop `image` to the fractional visible region (`src_rect`, §20.1.10.48) and
+/// scale that region to the display target resolution in one Mitchell pass.
+///
+/// Baking the crop into the bitmap means only the visible pixels are embedded:
+/// a heavy crop no longer carries its cropped-away pixels into the PDF at full
+/// resolution (finding 3). The result maps whole → destination at draw time.
+/// The surface is capped at the visible region's own pixel count, so a
+/// magnifying crop is not upsampled, and at the display target, so a
+/// high-resolution crop is downsampled.
+///
+/// Returns `None` only if the raster surface can't be allocated (near-OOM); the
+/// caller then falls back to a draw-time crop of the full image.
+fn prepare_cropped(
+    image: &skia_safe::Image,
+    src_rect: &crate::render::geometry::PtRect,
+    display: crate::render::geometry::PtRect,
+) -> Option<skia_safe::Image> {
+    use skia_safe::{AlphaType, ColorType, CubicResampler, ImageInfo, SamplingOptions};
+
+    let src = src_pixel_rect(image, src_rect);
+    // Never allocate more pixels than the visible region provides (no upsample)
+    // nor more than the display needs at target DPI (no bloat).
+    let (disp_w, disp_h) = downsample_target(display);
+    let target_w = disp_w.min(src.width().round() as i32).max(1);
+    let target_h = disp_h.min(src.height().round() as i32).max(1);
+
+    // Preserve the source's opacity: an opaque image encodes as JPEG
+    // (encoding_quality); a transparent one keeps its alpha (lossless).
+    let alpha = if image.alpha_type() == AlphaType::Opaque {
+        AlphaType::Opaque
+    } else {
+        AlphaType::Premul
+    };
+    let info = ImageInfo::new((target_w, target_h), ColorType::RGBA8888, alpha, None);
+    let sampling = SamplingOptions::from(CubicResampler::mitchell());
+    let mut surface = skia_safe::surfaces::raster(&info, None, None)?;
+    let dst = skia_safe::Rect::from_iwh(target_w, target_h);
+    surface.canvas().draw_image_rect_with_sampling_options(
+        image,
+        Some((&src, SrcRectConstraint::Strict)),
+        dst,
+        sampling,
+        &Paint::default(),
+    );
+    Some(surface.image_snapshot())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -888,40 +957,66 @@ mod tests {
     }
 
     #[test]
-    fn crop_inflates_downsample_target_so_cache_keys_differ() {
-        // Same on-page size; one placement crops to the middle 50%×50%.
-        let display = rect(72.0, 36.0);
-        let uncropped = crop_adjusted_downsample_rect(&display, &None);
-        let cropped = crop_adjusted_downsample_rect(
-            &display,
-            &Some(crate::render::geometry::PtRect::from_xywh(
-                Pt::new(0.25),
-                Pt::new(0.25),
-                Pt::new(0.5),
-                Pt::new(0.5),
-            )),
+    fn quantize_crop_distinguishes_crops_but_matches_spec_identical_ones() {
+        let a = crate::render::geometry::PtRect::from_xywh(
+            Pt::new(0.25),
+            Pt::new(0.25),
+            Pt::new(0.5),
+            Pt::new(0.5),
         );
-        // The crop needs 2× the source resolution for the same display size,
-        // so the downsample targets — and thus the cache keys — differ, and
-        // the second placement won't reuse the first's lower-res bitmap.
-        assert_eq!(downsample_target(uncropped), (300, 150));
-        assert_eq!(downsample_target(cropped), (600, 300));
-        assert_ne!(downsample_target(uncropped), downsample_target(cropped));
+        let b = crate::render::geometry::PtRect::from_xywh(
+            Pt::new(0.1),
+            Pt::new(0.1),
+            Pt::new(0.8),
+            Pt::new(0.8),
+        );
+        // Different crops key differently, so one placement can't reuse the
+        // other's pre-cropped bitmap; an identical crop keys the same.
+        assert_ne!(quantize_crop(&a), quantize_crop(&b));
+        assert_eq!(quantize_crop(&a), quantize_crop(&a));
+        // 50% == 50000 thousandth-percent.
+        assert_eq!(quantize_crop(&a), (25000, 25000, 50000, 50000));
+    }
+
+    /// Opaque solid-color test image of the given pixel dimensions.
+    fn solid_image(w: i32, h: i32) -> skia_safe::Image {
+        use skia_safe::{AlphaType, ColorType, ImageInfo};
+        let info = ImageInfo::new((w, h), ColorType::RGBA8888, AlphaType::Opaque, None);
+        let mut surface = skia_safe::surfaces::raster(&info, None, None).expect("raster surface");
+        surface.canvas().clear(Color4f::new(0.1, 0.2, 0.3, 1.0));
+        surface.image_snapshot()
     }
 
     #[test]
-    fn degenerate_zero_crop_leaves_downsample_rect_unchanged() {
-        let display = rect(72.0, 36.0);
-        // A zero-area crop must not divide by zero; falls back to the display rect.
-        let zero = Some(crate::render::geometry::PtRect::from_xywh(
-            Pt::ZERO,
-            Pt::ZERO,
-            Pt::ZERO,
-            Pt::ZERO,
-        ));
-        assert_eq!(
-            downsample_target(crop_adjusted_downsample_rect(&display, &zero)),
-            downsample_target(display),
+    fn prepare_cropped_embeds_only_the_visible_region_not_the_whole_image() {
+        // 1000×1000 source, cropped to the middle 10%×10% → a 100×100 visible
+        // region. Displayed at 72pt (300px @ 300 DPI), but the visible region
+        // only has 100px, so we don't upsample — the baked bitmap is 100×100,
+        // NOT the full 1000×1000 (finding 3: no cropped-away pixels embedded).
+        let src = solid_image(1000, 1000);
+        let crop = crate::render::geometry::PtRect::from_xywh(
+            Pt::new(0.45),
+            Pt::new(0.45),
+            Pt::new(0.1),
+            Pt::new(0.1),
         );
+        let out = prepare_cropped(&src, &crop, rect(72.0, 72.0)).expect("prepare");
+        assert_eq!((out.width(), out.height()), (100, 100));
+    }
+
+    #[test]
+    fn prepare_cropped_downsamples_a_high_res_crop_to_the_display_target() {
+        // 4000×4000 source, cropped to the middle 50% → a 2000×2000 visible
+        // region, displayed at 72pt. The region has more pixels than the
+        // display needs (300px @ 300 DPI), so it downsamples to 300×300.
+        let src = solid_image(4000, 4000);
+        let crop = crate::render::geometry::PtRect::from_xywh(
+            Pt::new(0.25),
+            Pt::new(0.25),
+            Pt::new(0.5),
+            Pt::new(0.5),
+        );
+        let out = prepare_cropped(&src, &crop, rect(72.0, 72.0)).expect("prepare");
+        assert_eq!((out.width(), out.height()), (300, 300));
     }
 }
