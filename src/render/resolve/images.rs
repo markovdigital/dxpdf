@@ -2,7 +2,10 @@
 
 use std::rc::Rc;
 
-use crate::model::{GraphicContent, Image, ImageFormat, RelId};
+use crate::model::dimension::{Dimension, ThousandthPercent};
+use crate::model::{GraphicContent, Image, ImageFormat, RelId, RelativeRect};
+use crate::render::dimension::Pt;
+use crate::render::geometry::PtRect;
 
 /// Resolved image entry — shared bytes with detected format.
 ///
@@ -23,22 +26,19 @@ pub fn extract_image_rel_id(image: &Image) -> Option<&RelId> {
     }
 }
 
-/// §20.1.10.48 `a:srcRect` — the picture's source crop, as a rectangle in
-/// `[0, 1]` relative to the image's natural extent (origin = top-left crop
-/// offset, size = visible fraction). Returns `None` when there is no crop,
-/// so the whole image is drawn. Word crops the source *before* stretching it
-/// into the display frame; ignoring this squashes cropped logos (the visible
-/// aspect ratio no longer matches the frame). See `ResolvedBlip::src_rect`
-/// for the same value on the shape-fill path.
-pub fn extract_src_rect(image: &Image) -> Option<crate::render::geometry::PtRect> {
-    use crate::model::dimension::{Dimension, ThousandthPercent};
-    use crate::render::dimension::Pt;
-    use crate::render::geometry::PtRect;
-
-    let GraphicContent::Picture(pic) = image.graphic.as_ref()? else {
-        return None;
-    };
-    let rel = pic.blip_fill.src_rect.as_ref()?;
+/// §20.1.10.48 CT_RelativeRect → the visible source region as a fraction rect
+/// in `[0, 1]` (origin = top-left crop offset, size = visible fraction).
+///
+/// The single home for the `1 - l - r` crop math: both the picture blip
+/// (`extract_src_rect`) and the shape-fill blip (`ResolvedBlip::src_rect`)
+/// paths call it, so cropped pictures and cropped fills can never diverge.
+///
+/// Returns `None` when there is no crop (all edges zero → draw the whole image)
+/// or when the insets overlap so the visible region collapses (`l + r ≥ 1` or
+/// `t + b ≥ 1`, malformed → fall back to the whole image rather than a blank
+/// `Strict`-sampled frame). Negative insets are preserved as an out-of-`[0, 1]`
+/// rect — the painter resolves those into letterbox/pillarbox padding.
+pub(crate) fn relative_rect_to_fraction(rel: &RelativeRect) -> Option<PtRect> {
     // CT_RelativeRect edges are in thousandths of a percent (100% = 100000).
     let frac = |d: Option<Dimension<ThousandthPercent>>| d.map_or(0.0, |v| v.to_fraction());
     let (left, top, right, bottom) = (
@@ -51,11 +51,6 @@ pub fn extract_src_rect(image: &Image) -> Option<crate::render::geometry::PtRect
         return None;
     }
     let (visible_w, visible_h) = (1.0 - left - right, 1.0 - top - bottom);
-    // A valid §20.1.10.48 crop leaves a positive visible region. If the insets
-    // overlap (l + r ≥ 1 or t + b ≥ 1) the region collapses to nothing —
-    // malformed input. Draw the whole image (return None) rather than emit a
-    // zero-area src rect, which under `SrcRectConstraint::Strict` paints a blank
-    // frame where the image should be.
     if visible_w <= 0.0 || visible_h <= 0.0 {
         return None;
     }
@@ -65,6 +60,20 @@ pub fn extract_src_rect(image: &Image) -> Option<crate::render::geometry::PtRect
         Pt::new(visible_w),
         Pt::new(visible_h),
     ))
+}
+
+/// §20.1.10.48 `a:srcRect` — the picture's source crop, as a fraction rect in
+/// `[0, 1]` relative to the image's natural extent. Returns `None` when there
+/// is no crop, so the whole image is drawn. Word crops the source *before*
+/// stretching it into the display frame; ignoring this squashes cropped logos
+/// (the visible aspect ratio no longer matches the frame). The conversion
+/// itself lives in [`relative_rect_to_fraction`], shared with the shape-fill
+/// blip path (`ResolvedBlip::src_rect`).
+pub fn extract_src_rect(image: &Image) -> Option<PtRect> {
+    let GraphicContent::Picture(pic) = image.graphic.as_ref()? else {
+        return None;
+    };
+    relative_rect_to_fraction(pic.blip_fill.src_rect.as_ref()?)
 }
 
 #[cfg(test)]
@@ -290,5 +299,39 @@ mod tests {
             });
         }
         assert!(extract_src_rect(&img).is_none());
+    }
+
+    #[test]
+    fn relative_rect_to_fraction_is_the_shared_converter() {
+        // Direct test of the seam both blip paths call: 25% left / 10% bottom
+        // crop → origin (0.25, 0) and visible (0.65, 0.90).
+        let rel = RelativeRect {
+            left: Some(Dimension::new(25000)),
+            top: None,
+            right: Some(Dimension::new(10000)),
+            bottom: Some(Dimension::new(10000)),
+        };
+        let r = relative_rect_to_fraction(&rel).expect("crop present");
+        assert!((r.origin.x.raw() - 0.25).abs() < 1e-5);
+        assert!((r.size.width.raw() - 0.65).abs() < 1e-5);
+        assert!((r.size.height.raw() - 0.90).abs() < 1e-5);
+    }
+
+    #[test]
+    fn relative_rect_to_fraction_preserves_negative_insets_for_padding() {
+        // Negative insets (letterbox padding) stay as an out-of-[0,1] rect; the
+        // painter turns that into padding rather than the converter clamping it.
+        let rel = RelativeRect {
+            left: Some(Dimension::new(-20000)),
+            top: None,
+            right: Some(Dimension::new(-20000)),
+            bottom: None,
+        };
+        let r = relative_rect_to_fraction(&rel).expect("crop present");
+        assert!(
+            (r.origin.x.raw() + 0.2).abs() < 1e-5,
+            "negative origin kept"
+        );
+        assert!((r.size.width.raw() - 1.4).abs() < 1e-5, "width > 1 kept");
     }
 }
