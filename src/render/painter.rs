@@ -78,12 +78,16 @@ fn quantize_crop(crop: &crate::render::geometry::PtRect) -> (i32, i32, i32, i32)
 ///
 /// `image_dpi` is the target resolution (pixels per inch) raster images are
 /// downsampled to before embedding; see [`RenderOptions`](crate::render::RenderOptions).
-/// It is assumed sanitized (positive, finite) by the caller.
+/// It is sanitized here (floored to a positive, finite value) so this public
+/// entry point stays safe even when a caller bypasses `RenderOptions` and passes
+/// a raw `f32` — a non-positive or `NaN`/`∞` value would otherwise produce
+/// degenerate (1×1 or un-downsampled) images.
 pub fn render_to_pdf(
     pages: &[LayoutedPage],
     registry: &FontRegistry,
     image_dpi: f32,
 ) -> Result<Vec<u8>, RenderError> {
+    let image_dpi = crate::render::sanitize_image_dpi(image_dpi);
     let mut pdf_bytes: Vec<u8> = Vec::new();
     let pdf_metadata = pdf::Metadata {
         encoding_quality: Some(85),
@@ -1098,6 +1102,41 @@ mod tests {
             pdf_300.len(),
             pdf_72.len()
         );
+    }
+
+    #[test]
+    fn render_to_pdf_sanitizes_out_of_range_image_dpi() {
+        // A caller bypassing RenderOptions can pass a raw dpi to this public
+        // entry. Non-positive / non-finite values must be floored to 1.0 (not
+        // panic, not produce degenerate 1×1 or un-downsampled output): every
+        // bad value must render byte-for-byte like an explicit 1.0.
+        use crate::model::ImageFormat;
+        use crate::render::resolve::images::MediaEntry;
+
+        let media = MediaEntry {
+            data: Rc::from(textured_png(1200).into_boxed_slice()),
+            format: ImageFormat::Png,
+        };
+        let page = || LayoutedPage {
+            commands: vec![DrawCommand::Image {
+                rect: rect(72.0, 72.0),
+                image_data: media.clone(),
+                src_rect: None,
+            }],
+            page_size: PtSize::new(Pt::new(200.0), Pt::new(200.0)),
+        };
+        let registry = test_registry();
+
+        let floor = render_to_pdf(&[page()], &registry, 1.0).expect("render at floor");
+        for bad in [-50.0f32, 0.0, f32::NAN, f32::NEG_INFINITY] {
+            let got = render_to_pdf(&[page()], &registry, bad).expect("must not panic");
+            assert_eq!(&got[..5], b"%PDF-", "dpi={bad} must produce a valid PDF");
+            assert_eq!(
+                got.len(),
+                floor.len(),
+                "dpi={bad} must be clamped to the 1.0 floor"
+            );
+        }
     }
 
     #[test]

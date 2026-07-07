@@ -39,6 +39,20 @@ pub const DEFAULT_IMAGE_DPI: f32 = 220.0;
 /// produce a zero/negative downsample target, so it is clamped up to this floor.
 const MIN_IMAGE_DPI: f32 = 1.0;
 
+/// Clamp a requested image DPI to a positive, finite value: non-positive and
+/// non-finite (`NaN`, `±∞`) requests are floored to [`MIN_IMAGE_DPI`].
+///
+/// Shared by [`RenderOptions::with_image_dpi`] and the [`painter::render_to_pdf`]
+/// boundary so the public paint entry point stays safe even when a caller
+/// bypasses [`RenderOptions`] and passes a raw `f32` directly.
+pub(crate) fn sanitize_image_dpi(image_dpi: f32) -> f32 {
+    if image_dpi.is_finite() {
+        image_dpi.max(MIN_IMAGE_DPI)
+    } else {
+        MIN_IMAGE_DPI
+    }
+}
+
 /// Tunable knobs for the paint phase.
 ///
 /// Constructed via [`RenderOptions::default`] and the `with_*` builder setters,
@@ -55,11 +69,7 @@ impl RenderOptions {
     /// Set the target image resolution in pixels per inch. Non-positive or
     /// non-finite requests are clamped up to [`MIN_IMAGE_DPI`].
     pub fn with_image_dpi(mut self, image_dpi: f32) -> Self {
-        self.image_dpi = if image_dpi.is_finite() {
-            image_dpi.max(MIN_IMAGE_DPI)
-        } else {
-            MIN_IMAGE_DPI
-        };
+        self.image_dpi = sanitize_image_dpi(image_dpi);
         self
     }
 
