@@ -4,7 +4,11 @@ use clap::Parser;
 use dxpdf::{RenderOptions, DEFAULT_IMAGE_DPI};
 
 #[derive(Parser)]
-#[command(name = "dxpdf", about = "DOCX files to PDF converter")]
+#[command(
+    name = "dxpdf",
+    about = "DOCX files to PDF converter",
+    allow_negative_numbers = true
+)]
 struct Cli {
     /// Input .docx file
     input: PathBuf,
@@ -15,8 +19,28 @@ struct Cli {
 
     /// Target resolution (pixels per inch) for embedded raster images.
     /// Higher values yield crisper images and larger PDFs.
-    #[arg(long, default_value_t = DEFAULT_IMAGE_DPI)]
+    #[arg(long, default_value_t = DEFAULT_IMAGE_DPI, value_parser = parse_image_dpi)]
     image_dpi: f32,
+}
+
+/// Lowest / highest `--image-dpi` the CLI accepts. Bounds only catch typos; the
+/// library floor lives in `RenderOptions`.
+const MIN_CLI_IMAGE_DPI: f32 = 1.0;
+const MAX_CLI_IMAGE_DPI: f32 = 2400.0;
+
+/// Parse and range-check `--image-dpi`, rejecting non-numeric, non-finite, and
+/// out-of-range values instead of silently clamping them — so a typo like
+/// `--image-dpi -300` surfaces as a CLI error rather than unreadable output.
+fn parse_image_dpi(s: &str) -> Result<f32, String> {
+    let dpi: f32 = s
+        .parse()
+        .map_err(|_| format!("`{s}` is not a valid number"))?;
+    if !dpi.is_finite() || !(MIN_CLI_IMAGE_DPI..=MAX_CLI_IMAGE_DPI).contains(&dpi) {
+        return Err(format!(
+            "must be between {MIN_CLI_IMAGE_DPI} and {MAX_CLI_IMAGE_DPI} DPI (got `{s}`)"
+        ));
+    }
+    Ok(dpi)
 }
 
 fn main() -> Result<(), dxpdf::Error> {
@@ -36,4 +60,31 @@ fn main() -> Result<(), dxpdf::Error> {
     eprintln!("Converted {} -> {}", cli.input.display(), output.display());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_dpi_accepts_in_range_and_the_default() {
+        assert_eq!(parse_image_dpi("220").unwrap(), 220.0);
+        assert_eq!(parse_image_dpi("1").unwrap(), MIN_CLI_IMAGE_DPI);
+        assert_eq!(parse_image_dpi("2400").unwrap(), MAX_CLI_IMAGE_DPI);
+        // `default_value_t` renders the default and re-parses it — must round-trip.
+        assert_eq!(
+            parse_image_dpi(&DEFAULT_IMAGE_DPI.to_string()).unwrap(),
+            DEFAULT_IMAGE_DPI
+        );
+    }
+
+    #[test]
+    fn image_dpi_rejects_out_of_range_and_non_numeric() {
+        for bad in ["0", "-5", "-300", "2401", "nan", "inf", "-inf", "abc", ""] {
+            assert!(
+                parse_image_dpi(bad).is_err(),
+                "`{bad}` should be rejected, not silently clamped"
+            );
+        }
+    }
 }
