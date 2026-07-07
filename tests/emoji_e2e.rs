@@ -192,8 +192,9 @@ fn e4_full_pdf_round_trip() {
     }
     let font_mgr = skia_safe::FontMgr::new();
     let doc = parse_fixture();
-    let pdf_bytes = dxpdf::render::render_with_font_mgr(&doc, &font_mgr)
-        .expect("render must succeed for fixture");
+    let pdf_bytes =
+        dxpdf::render::render_with_font_mgr(&doc, &font_mgr, &dxpdf::RenderOptions::default())
+            .expect("render must succeed for fixture");
 
     let parsed =
         lopdf::Document::load_mem(&pdf_bytes).expect("rendered PDF must parse cleanly with lopdf");
@@ -347,7 +348,9 @@ fn e_keycap_3_pdf_image_count() {
     }
     let font_mgr = skia_safe::FontMgr::new();
     let doc = parse_fixture();
-    let pdf_bytes = dxpdf::render::render_with_font_mgr(&doc, &font_mgr).expect("render");
+    let pdf_bytes =
+        dxpdf::render::render_with_font_mgr(&doc, &font_mgr, &dxpdf::RenderOptions::default())
+            .expect("render");
 
     let parsed = lopdf::Document::load_mem(&pdf_bytes).expect("load_mem");
     let mut image_count = 0;

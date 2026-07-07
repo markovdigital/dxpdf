@@ -25,6 +25,67 @@ pub mod subset;
 
 use crate::model::Document;
 
+/// Default target resolution (pixels per inch) for embedded raster images.
+///
+/// This is a *ceiling*: images are downsampled toward it but never upsampled
+/// (see [`painter::render_to_pdf`]), so it caps only oversized images and
+/// otherwise preserves the source resolution. 220 mirrors Microsoft Word's
+/// default image-compression resolution, keeping images crisp at 100% zoom on
+/// typical (including HiDPI) displays. Front-ends (CLI, Python) override it to
+/// trade file size against sharpness — e.g. 300 for print, 96 for small files.
+pub const DEFAULT_IMAGE_DPI: f32 = 220.0;
+
+/// Lower bound applied to any requested image DPI. A non-positive request would
+/// produce a zero/negative downsample target, so it is clamped up to this floor.
+const MIN_IMAGE_DPI: f32 = 1.0;
+
+/// Clamp a requested image DPI to a positive, finite value: non-positive and
+/// non-finite (`NaN`, `±∞`) requests are floored to [`MIN_IMAGE_DPI`]. The
+/// clamp lives here (not at the paint boundary) because `render_to_pdf` takes a
+/// [`RenderOptions`], which can only be built through this — so a sanitized DPI
+/// is guaranteed by construction.
+fn sanitize_image_dpi(image_dpi: f32) -> f32 {
+    if image_dpi.is_finite() {
+        image_dpi.max(MIN_IMAGE_DPI)
+    } else {
+        MIN_IMAGE_DPI
+    }
+}
+
+/// Tunable knobs for the paint phase.
+///
+/// Constructed via [`RenderOptions::default`] and the `with_*` builder setters,
+/// so requested values are sanitized on the way in and additional knobs can be
+/// added without breaking call sites.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RenderOptions {
+    /// Target resolution (pixels per inch) images are downsampled to before
+    /// embedding. Higher values yield crisper images and larger PDFs.
+    image_dpi: f32,
+}
+
+impl RenderOptions {
+    /// Set the target image resolution in pixels per inch. Non-positive or
+    /// non-finite requests are clamped up to [`MIN_IMAGE_DPI`].
+    pub fn with_image_dpi(mut self, image_dpi: f32) -> Self {
+        self.image_dpi = sanitize_image_dpi(image_dpi);
+        self
+    }
+
+    /// The sanitized target image resolution in pixels per inch.
+    pub fn image_dpi(&self) -> f32 {
+        self.image_dpi
+    }
+}
+
+impl Default for RenderOptions {
+    fn default() -> Self {
+        Self {
+            image_dpi: DEFAULT_IMAGE_DPI,
+        }
+    }
+}
+
 use crate::model::Block;
 use crate::render::layout::build::{
     build_section_blocks, default_line_height, BuildContext, BuildState,
@@ -68,15 +129,16 @@ fn estimate_cursor_y(
 }
 
 /// Full pipeline: resolve → preload fonts → layout → paint.
-pub fn render(doc: &Document) -> Result<Vec<u8>, error::RenderError> {
+pub fn render(doc: &Document, options: &RenderOptions) -> Result<Vec<u8>, error::RenderError> {
     let font_mgr = skia_safe::FontMgr::new();
-    render_with_font_mgr(doc, &font_mgr)
+    render_with_font_mgr(doc, &font_mgr, options)
 }
 
 /// Render with a pre-configured FontMgr (for reuse across calls).
 pub fn render_with_font_mgr(
     doc: &Document,
     font_mgr: &skia_safe::FontMgr,
+    options: &RenderOptions,
 ) -> Result<Vec<u8>, error::RenderError> {
     let resolved = resolve::resolve(doc);
     #[allow(unused_mut)] // mut required only when subset-fonts is enabled
@@ -94,7 +156,7 @@ pub fn render_with_font_mgr(
         log::info!("font subset: {report}");
     }
 
-    painter::render_to_pdf(&pages, &registry)
+    painter::render_to_pdf(&pages, &registry, options)
 }
 
 /// Resolve and lay out a document without painting to PDF.
@@ -440,6 +502,47 @@ mod tests {
             }))],
             rsids: ParagraphRevisionIds::default(),
         }))
+    }
+
+    #[test]
+    fn render_options_default_matches_word_resolution() {
+        // 220 ppi mirrors Word's default image-compression resolution.
+        assert_eq!(DEFAULT_IMAGE_DPI, 220.0);
+        assert_eq!(RenderOptions::default().image_dpi(), 220.0);
+    }
+
+    #[test]
+    fn render_options_with_image_dpi_overrides() {
+        assert_eq!(
+            RenderOptions::default().with_image_dpi(300.0).image_dpi(),
+            300.0
+        );
+    }
+
+    #[test]
+    fn render_options_clamps_non_positive_and_non_finite_dpi() {
+        // Zero, negative, and non-finite requests clamp up to the floor so the
+        // downsample target is always a meaningful positive resolution.
+        assert_eq!(
+            RenderOptions::default().with_image_dpi(0.0).image_dpi(),
+            1.0
+        );
+        assert_eq!(
+            RenderOptions::default().with_image_dpi(-50.0).image_dpi(),
+            1.0
+        );
+        assert_eq!(
+            RenderOptions::default()
+                .with_image_dpi(f32::NAN)
+                .image_dpi(),
+            1.0
+        );
+        assert_eq!(
+            RenderOptions::default()
+                .with_image_dpi(f32::INFINITY)
+                .image_dpi(),
+            1.0
+        );
     }
 
     #[test]

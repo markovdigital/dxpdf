@@ -52,7 +52,13 @@ pip install dxpdf
 ```bash
 dxpdf input.docx                  # produces input.pdf
 dxpdf input.docx -o output.pdf    # specify output path
+dxpdf input.docx --image-dpi 300  # embed images at 300 DPI (default 220; range 1–2400)
 ```
+
+Embedded raster images are downsampled to `--image-dpi` pixels per inch
+(default **220**, matching Word). Raise it for print-quality output (e.g. `300`)
+or lower it for smaller files (e.g. `96`); images are never upsampled past their
+source resolution.
 
 ### Rust — Convert DOCX to PDF Programmatically
 
@@ -62,6 +68,16 @@ let pdf_bytes = dxpdf::convert(&docx_bytes)?;
 std::fs::write("output.pdf", &pdf_bytes)?;
 ```
 
+To customize rendering — e.g. the embedded-image resolution (default 220 DPI) —
+use `convert_with_options`:
+
+```rust
+use dxpdf::RenderOptions;
+
+let options = RenderOptions::default().with_image_dpi(300.0);
+let pdf_bytes = dxpdf::convert_with_options(&docx_bytes, &options)?;
+```
+
 You can also inspect or transform the parsed document model before conversion:
 
 ```rust
@@ -69,14 +85,15 @@ use dxpdf::{docx, model, render};
 
 let document = docx::parse(&std::fs::read("document.docx")?)?;
 
-for block in &document.blocks {
+for block in &document.body {
     match block {
         model::Block::Paragraph(p) => { /* inspect paragraph content */ }
         model::Block::Table(t) => { /* inspect table structure */ }
+        model::Block::SectionBreak(props) => { /* inspect section properties */ }
     }
 }
 
-let pdf_bytes = render::render(&document)?;
+let pdf_bytes = render::render(&document, &dxpdf::RenderOptions::default())?;
 ```
 
 ### Python — Convert DOCX to PDF in Python
@@ -89,6 +106,10 @@ pdf_bytes = dxpdf.convert(open("input.docx", "rb").read())
 
 # File path to file path
 dxpdf.convert_file("input.docx", "output.pdf")
+
+# Customize embedded-image resolution (default 220 DPI)
+pdf_bytes = dxpdf.convert(open("input.docx", "rb").read(), image_dpi=300)
+dxpdf.convert_file("input.docx", "output.pdf", image_dpi=300)
 ```
 
 ## Supported DOCX Features

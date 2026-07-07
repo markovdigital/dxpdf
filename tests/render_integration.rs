@@ -55,8 +55,9 @@ fn all_files_render_to_pdf() {
     let font_mgr = skia_safe::FontMgr::new();
     for filename in test_docx_files() {
         let doc = parse_docx(filename);
-        let pdf_bytes = dxpdf::render::render_with_font_mgr(&doc, &font_mgr)
-            .unwrap_or_else(|e| panic!("{filename}: render failed: {e}"));
+        let pdf_bytes =
+            dxpdf::render::render_with_font_mgr(&doc, &font_mgr, &dxpdf::RenderOptions::default())
+                .unwrap_or_else(|e| panic!("{filename}: render failed: {e}"));
         assert!(
             pdf_bytes.len() > 100,
             "{filename}: PDF output too small ({} bytes)",
@@ -96,8 +97,9 @@ fn font_subsetting_shrinks_pdf_with_embedded_fonts() {
         !doc.embedded_fonts.is_empty(),
         "test precondition: sample1 must contain embedded fonts"
     );
-    let pdf_with_subset = dxpdf::render::render_with_font_mgr(&doc, &font_mgr)
-        .expect("subset-on render must succeed");
+    let pdf_with_subset =
+        dxpdf::render::render_with_font_mgr(&doc, &font_mgr, &dxpdf::RenderOptions::default())
+            .expect("subset-on render must succeed");
 
     // Sanity: still a valid PDF, has actual content.
     assert!(pdf_with_subset.starts_with(b"%PDF"));
@@ -127,7 +129,9 @@ fn font_subsetting_shrinks_pdf_with_embedded_fonts() {
 fn subsetted_pdf_is_well_formed() {
     let font_mgr = skia_safe::FontMgr::new();
     let doc = parse_docx("sample-docx-files-sample1.docx");
-    let pdf_bytes = dxpdf::render::render_with_font_mgr(&doc, &font_mgr).unwrap();
+    let pdf_bytes =
+        dxpdf::render::render_with_font_mgr(&doc, &font_mgr, &dxpdf::RenderOptions::default())
+            .unwrap();
 
     let parsed =
         lopdf::Document::load_mem(&pdf_bytes).expect("subsetted PDF must parse cleanly with lopdf");
@@ -211,8 +215,9 @@ fn font_scaling_docx_carries_text_scale_through_layout() {
 fn font_scaling_docx_renders_to_pdf() {
     let font_mgr = skia_safe::FontMgr::new();
     let doc = parse_docx("font_scaling.docx");
-    let pdf_bytes = dxpdf::render::render_with_font_mgr(&doc, &font_mgr)
-        .expect("font_scaling.docx must render");
+    let pdf_bytes =
+        dxpdf::render::render_with_font_mgr(&doc, &font_mgr, &dxpdf::RenderOptions::default())
+            .expect("font_scaling.docx must render");
     assert!(pdf_bytes.starts_with(b"%PDF"));
     assert!(
         pdf_bytes.len() > 1_000,
