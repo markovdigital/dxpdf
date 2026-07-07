@@ -40,12 +40,11 @@ pub const DEFAULT_IMAGE_DPI: f32 = 220.0;
 const MIN_IMAGE_DPI: f32 = 1.0;
 
 /// Clamp a requested image DPI to a positive, finite value: non-positive and
-/// non-finite (`NaN`, `±∞`) requests are floored to [`MIN_IMAGE_DPI`].
-///
-/// Shared by [`RenderOptions::with_image_dpi`] and the [`painter::render_to_pdf`]
-/// boundary so the public paint entry point stays safe even when a caller
-/// bypasses [`RenderOptions`] and passes a raw `f32` directly.
-pub(crate) fn sanitize_image_dpi(image_dpi: f32) -> f32 {
+/// non-finite (`NaN`, `±∞`) requests are floored to [`MIN_IMAGE_DPI`]. The
+/// clamp lives here (not at the paint boundary) because `render_to_pdf` takes a
+/// [`RenderOptions`], which can only be built through this — so a sanitized DPI
+/// is guaranteed by construction.
+fn sanitize_image_dpi(image_dpi: f32) -> f32 {
     if image_dpi.is_finite() {
         image_dpi.max(MIN_IMAGE_DPI)
     } else {
@@ -157,7 +156,7 @@ pub fn render_with_font_mgr(
         log::info!("font subset: {report}");
     }
 
-    painter::render_to_pdf(&pages, &registry, options.image_dpi())
+    painter::render_to_pdf(&pages, &registry, options)
 }
 
 /// Resolve and lay out a document without painting to PDF.

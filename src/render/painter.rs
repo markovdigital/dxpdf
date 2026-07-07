@@ -21,6 +21,7 @@ use crate::render::resolve::drawing_color::Rgba;
 use crate::render::resolve::images::MediaEntry;
 use crate::render::resolve::shape_geometry::{PathVerb, SubPath};
 use crate::render::skia_conv::{to_color4f, to_line, to_point, to_rect, to_size};
+use crate::render::RenderOptions;
 
 /// PDF user-space units per inch — the fixed 1 pt = 1/72 in conversion used to
 /// turn a display size in points into a pixel target at a given image DPI.
@@ -76,51 +77,27 @@ fn quantize_crop(crop: &crate::render::geometry::PtRect) -> (i32, i32, i32, i32)
 /// every text run through it so any subsetted typefaces (swapped in by
 /// `subset::apply` between layout and paint) are picked up correctly.
 ///
-/// `image_dpi` is the target resolution (pixels per inch) raster images are
-/// downsampled to before embedding; see [`RenderOptions`](crate::render::RenderOptions).
-/// It is sanitized here (floored to a positive, finite value) so this public
-/// entry point stays safe even when a caller bypasses `RenderOptions` and passes
-/// a raw `f32` — a non-positive or `NaN`/`∞` value would otherwise produce
-/// degenerate (1×1 or un-downsampled) images.
+/// `options` carries the paint-phase knobs (currently the target image DPI; see
+/// [`RenderOptions`]). Taking the struct rather than a raw `f32` keeps this
+/// public entry point safe by construction — a `RenderOptions` can only hold a
+/// sanitized DPI — and lets future knobs flow through without a signature change.
 pub fn render_to_pdf(
     pages: &[LayoutedPage],
     registry: &FontRegistry,
-    image_dpi: f32,
+    options: &RenderOptions,
 ) -> Result<Vec<u8>, RenderError> {
-    let image_dpi = crate::render::sanitize_image_dpi(image_dpi);
     let mut pdf_bytes: Vec<u8> = Vec::new();
     let pdf_metadata = pdf::Metadata {
         encoding_quality: Some(85),
         ..Default::default()
     };
     let mut doc = pdf::new_document(&mut pdf_bytes, Some(&pdf_metadata));
-    let mut font_cache = fonts::FontCache::new();
-    // Cache decoded Skia images across pages. Avoids re-copying and
-    // re-decoding the same image bytes on every page (e.g. a logo repeated in
-    // headers/footers). See `ImageCache` for the keying.
-    let mut image_cache: ImageCache = HashMap::new();
-    // Per-render emoji rasterizer — clusters that recur across pages
-    // (footer 📞 etc.) are rasterized once and shared.
-    let mut emoji_rasterizer = EmojiRasterizer::default();
-
-    // Position-independent glyph runs, cached per (font slot, text). draw_str
-    // rebuilds this run (text → glyph ids → advances) on every call; reusing a
-    // TextBlob skips that remap for words repeated across the document.
-    let mut blob_cache: FxHashMap<usize, FxHashMap<Box<str>, TextBlob>> = FxHashMap::default();
+    let mut state = PaintState::new();
     for page in pages {
         let mut on_page = doc.begin_page(to_size(page.page_size), None);
         {
             let canvas = on_page.canvas();
-            render_page(
-                canvas,
-                page,
-                registry,
-                &mut font_cache,
-                &mut image_cache,
-                &mut emoji_rasterizer,
-                &mut blob_cache,
-                image_dpi,
-            );
+            render_page(canvas, page, registry, &mut state, options);
         }
         doc = on_page.end_page();
     }
@@ -129,17 +106,52 @@ pub fn render_to_pdf(
     Ok(pdf_bytes)
 }
 
-#[allow(clippy::too_many_arguments)] // paint state is passed explicitly, not bundled
+/// Mutable per-render caches, shared across every page and bundled into one
+/// struct so `render_page` stays under clippy's argument-count limit and future
+/// paint state can be added without re-threading each call site.
+struct PaintState {
+    /// Font slot / typeface cache (see [`fonts::FontCache`]).
+    font_cache: fonts::FontCache,
+    /// Decoded Skia images across pages — avoids re-decoding the same bytes on
+    /// every page (e.g. a logo repeated in headers/footers). See [`ImageCache`].
+    image_cache: ImageCache,
+    /// Emoji rasterizer — clusters that recur across pages (footer 📞 etc.) are
+    /// rasterized once and shared.
+    emoji_rasterizer: EmojiRasterizer,
+    /// Position-independent glyph runs, cached per (font slot, text). `draw_str`
+    /// rebuilds this run on every call; reusing a `TextBlob` skips that remap for
+    /// words repeated across the document.
+    blob_cache: FxHashMap<usize, FxHashMap<Box<str>, TextBlob>>,
+}
+
+impl PaintState {
+    fn new() -> Self {
+        Self {
+            font_cache: fonts::FontCache::new(),
+            image_cache: HashMap::new(),
+            emoji_rasterizer: EmojiRasterizer::default(),
+            blob_cache: FxHashMap::default(),
+        }
+    }
+}
+
 fn render_page(
     canvas: &skia_safe::Canvas,
     page: &LayoutedPage,
     registry: &FontRegistry,
-    font_cache: &mut fonts::FontCache,
-    image_cache: &mut ImageCache,
-    emoji_rasterizer: &mut EmojiRasterizer,
-    blob_cache: &mut FxHashMap<usize, FxHashMap<Box<str>, TextBlob>>,
-    image_dpi: f32,
+    state: &mut PaintState,
+    options: &RenderOptions,
 ) {
+    // Destructure into disjoint `&mut` field bindings — same borrow semantics as
+    // the individual caches, so the paint body below is unchanged.
+    let PaintState {
+        font_cache,
+        image_cache,
+        emoji_rasterizer,
+        blob_cache,
+    } = state;
+    let image_dpi = options.image_dpi();
+
     // Reusable paints — built once per page instead of per draw command (a
     // large doc emits 100k+). Each carries the fixed config for its purpose;
     // only the fields that vary (color, stroke width) are set per command, so
@@ -859,7 +871,7 @@ mod tests {
             page_size: PtSize::new(Pt::new(612.0), Pt::new(792.0)),
         };
 
-        let pdf_bytes = render_to_pdf(&[page], &registry, crate::render::DEFAULT_IMAGE_DPI)
+        let pdf_bytes = render_to_pdf(&[page], &registry, &RenderOptions::default())
             .expect("render_to_pdf must succeed");
         assert!(pdf_bytes.len() > 100, "PDF output must be non-trivial");
         assert_eq!(&pdf_bytes[..5], b"%PDF-", "output must be valid PDF");
@@ -883,7 +895,7 @@ mod tests {
             page_size: PtSize::new(Pt::new(612.0), Pt::new(792.0)),
         };
 
-        let pdf_bytes = render_to_pdf(&[page], &registry, crate::render::DEFAULT_IMAGE_DPI)
+        let pdf_bytes = render_to_pdf(&[page], &registry, &RenderOptions::default())
             .expect("render_to_pdf must succeed");
         assert!(pdf_bytes.len() > 100);
         assert_eq!(&pdf_bytes[..5], b"%PDF-");
@@ -907,7 +919,7 @@ mod tests {
             page_size: PtSize::new(Pt::new(612.0), Pt::new(792.0)),
         };
 
-        let pdf_bytes = render_to_pdf(&[page], &registry, crate::render::DEFAULT_IMAGE_DPI)
+        let pdf_bytes = render_to_pdf(&[page], &registry, &RenderOptions::default())
             .expect("empty text must not panic");
         assert_eq!(&pdf_bytes[..5], b"%PDF-");
     }
@@ -960,7 +972,7 @@ mod tests {
             }],
             page_size: PtSize::new(Pt::new(612.0), Pt::new(792.0)),
         };
-        let pdf = render_to_pdf(&[page], &test_registry(), crate::render::DEFAULT_IMAGE_DPI)
+        let pdf = render_to_pdf(&[page], &test_registry(), &RenderOptions::default())
             .expect("render path");
         assert_eq!(&pdf[..5], b"%PDF-");
     }
@@ -1007,7 +1019,7 @@ mod tests {
             }],
             page_size: PtSize::new(Pt::new(612.0), Pt::new(792.0)),
         };
-        let pdf = render_to_pdf(&[page], &test_registry(), crate::render::DEFAULT_IMAGE_DPI)
+        let pdf = render_to_pdf(&[page], &test_registry(), &RenderOptions::default())
             .expect("render dashed line");
         assert_eq!(&pdf[..5], b"%PDF-");
     }
@@ -1030,7 +1042,7 @@ mod tests {
             page_size: PtSize::new(Pt::new(612.0), Pt::new(792.0)),
         };
 
-        let pdf_bytes = render_to_pdf(&[page], &registry, crate::render::DEFAULT_IMAGE_DPI)
+        let pdf_bytes = render_to_pdf(&[page], &registry, &RenderOptions::default())
             .expect("unicode text must not panic");
         assert_eq!(&pdf_bytes[..5], b"%PDF-");
     }
@@ -1093,8 +1105,9 @@ mod tests {
         };
 
         let registry = test_registry();
-        let pdf_72 = render_to_pdf(&[page()], &registry, 72.0).expect("render at 72 dpi");
-        let pdf_300 = render_to_pdf(&[page()], &registry, 300.0).expect("render at 300 dpi");
+        let opts = |dpi| RenderOptions::default().with_image_dpi(dpi);
+        let pdf_72 = render_to_pdf(&[page()], &registry, &opts(72.0)).expect("render at 72 dpi");
+        let pdf_300 = render_to_pdf(&[page()], &registry, &opts(300.0)).expect("render at 300 dpi");
 
         assert!(
             pdf_300.len() > pdf_72.len(),
@@ -1105,11 +1118,11 @@ mod tests {
     }
 
     #[test]
-    fn render_to_pdf_sanitizes_out_of_range_image_dpi() {
-        // A caller bypassing RenderOptions can pass a raw dpi to this public
-        // entry. Non-positive / non-finite values must be floored to 1.0 (not
-        // panic, not produce degenerate 1×1 or un-downsampled output): every
-        // bad value must render byte-for-byte like an explicit 1.0.
+    fn render_to_pdf_renders_clamped_low_dpi_without_degenerate_failure() {
+        // `with_image_dpi` floors out-of-range requests to 1.0; the paint path
+        // must then handle that floor — a 1×1 downsample target — without
+        // panicking, and a clamped-from-bad request must render identically to
+        // an explicit 1.0.
         use crate::model::ImageFormat;
         use crate::render::resolve::images::MediaEntry;
 
@@ -1127,14 +1140,24 @@ mod tests {
         };
         let registry = test_registry();
 
-        let floor = render_to_pdf(&[page()], &registry, 1.0).expect("render at floor");
+        let floor = render_to_pdf(
+            &[page()],
+            &registry,
+            &RenderOptions::default().with_image_dpi(1.0),
+        )
+        .expect("render at floor");
         for bad in [-50.0f32, 0.0, f32::NAN, f32::NEG_INFINITY] {
-            let got = render_to_pdf(&[page()], &registry, bad).expect("must not panic");
-            assert_eq!(&got[..5], b"%PDF-", "dpi={bad} must produce a valid PDF");
+            let opts = RenderOptions::default().with_image_dpi(bad);
+            let got = render_to_pdf(&[page()], &registry, &opts).expect("must not panic");
+            assert_eq!(
+                &got[..5],
+                b"%PDF-",
+                "dpi request {bad} must produce a valid PDF"
+            );
             assert_eq!(
                 got.len(),
                 floor.len(),
-                "dpi={bad} must be clamped to the 1.0 floor"
+                "dpi request {bad} must clamp to the 1.0 floor"
             );
         }
     }
