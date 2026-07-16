@@ -4,7 +4,9 @@ use super::super::draw_command::{DrawCommand, LayoutedPage};
 use super::super::float;
 use super::super::page::PageConfig;
 use super::super::paragraph::{layout_paragraph, ParagraphBorderStyle, ParagraphStyle};
-use super::super::table::{layout_table, layout_table_paginated, TablePaginationConfig};
+use super::super::table::{
+    layout_table, layout_table_paginated, measure_leading_table_group_height, TablePaginationConfig,
+};
 use super::super::BoxConstraints;
 use super::floating_table::{
     plan_floating_table_pages, resolve_floating_anchor, FloatingTableAnchor,
@@ -146,6 +148,113 @@ impl<'doc> PageLayoutState<'doc> {
     }
 }
 
+fn paragraph_keep_next(block: &LayoutBlock) -> bool {
+    matches!(block, LayoutBlock::Paragraph { style, .. } if style.keep_next)
+}
+
+fn starts_keep_next_chain(blocks: &[LayoutBlock], block_idx: usize) -> bool {
+    paragraph_keep_next(&blocks[block_idx])
+        && (block_idx == 0 || !paragraph_keep_next(&blocks[block_idx - 1]))
+}
+
+fn keep_next_terminal_table(blocks: &[LayoutBlock], start: usize) -> Option<&LayoutBlock> {
+    let mut index = start;
+
+    while let Some(block) = blocks.get(index) {
+        match block {
+            LayoutBlock::Paragraph {
+                style,
+                page_break_before,
+                ..
+            } => {
+                if index > start && *page_break_before {
+                    return None;
+                }
+                if !style.keep_next {
+                    return None;
+                }
+                index += 1;
+            }
+            LayoutBlock::Table { .. } => return Some(block),
+        }
+    }
+
+    None
+}
+
+fn fresh_page_contextual_space_before(
+    block: &LayoutBlock,
+    previous_style_id: &Option<StyleId>,
+) -> Pt {
+    let LayoutBlock::Paragraph { style, .. } = block else {
+        return Pt::ZERO;
+    };
+    let effective = style.clone_for_layout();
+    if effective.contextual_spacing
+        && effective.style_id.is_some()
+        && effective.style_id.as_ref() == previous_style_id.as_ref()
+    {
+        effective.space_before
+    } else {
+        Pt::ZERO
+    }
+}
+
+fn measure_keep_next_group(
+    blocks: &[LayoutBlock],
+    start: usize,
+    constraints: &BoxConstraints,
+    default_line_height: Pt,
+    measure_text: super::super::paragraph::MeasureTextFn<'_>,
+) -> Option<Pt> {
+    let mut height = Pt::ZERO;
+    let mut previous_space_after = Pt::ZERO;
+    let mut previous_style_id = None;
+    let mut index = start;
+
+    while let Some(block) = blocks.get(index) {
+        match block {
+            LayoutBlock::Paragraph {
+                fragments,
+                style,
+                page_break_before,
+                ..
+            } => {
+                if index > start && *page_break_before {
+                    return None;
+                }
+                let effective = style.clone_for_layout();
+                let collapsed = if effective.contextual_spacing
+                    && effective.style_id.is_some()
+                    && effective.style_id == previous_style_id
+                {
+                    previous_space_after + effective.space_before
+                } else {
+                    previous_space_after.min(effective.space_before)
+                };
+                let layout = layout_paragraph(
+                    fragments,
+                    constraints,
+                    &effective,
+                    default_line_height,
+                    measure_text,
+                );
+                height += layout.size.height - collapsed;
+                previous_space_after = effective.space_after;
+                previous_style_id = effective.style_id.clone();
+                if !effective.keep_next {
+                    return Some(height);
+                }
+                index += 1;
+            }
+            LayoutBlock::Table { .. } => {
+                return Some(height);
+            }
+        }
+    }
+    None
+}
+
 /// Lay out a sequence of blocks into pages.
 ///
 /// If `continuation` is provided, the section starts on the given page at the
@@ -204,6 +313,72 @@ pub fn layout_section(
                     state.prev_space_after = Pt::ZERO;
                 }
 
+                if num_cols == 1
+                    && starts_keep_next_chain(blocks, block_idx)
+                    && state.page_floats.is_empty()
+                {
+                    let constraints = col_constraints(state.current_col);
+                    if let Some(group_height) = measure_keep_next_group(
+                        blocks,
+                        block_idx,
+                        &constraints,
+                        ctx.default_line_height,
+                        ctx.measure_text,
+                    ) {
+                        let current_group_top = match &blocks[block_idx] {
+                            LayoutBlock::Paragraph { style, .. }
+                                if style.contextual_spacing
+                                    && style.style_id.is_some()
+                                    && style.style_id == state.prev_style_id =>
+                            {
+                                state.cursor_y - state.prev_space_after - style.space_before
+                            }
+                            LayoutBlock::Paragraph { style, .. } => {
+                                state.cursor_y - state.prev_space_after.min(style.space_before)
+                            }
+                            LayoutBlock::Table { .. } => state.cursor_y,
+                        };
+                        let full_page_height = ctx.page_bottom - config.margins.top;
+                        let fresh_page_group_height = group_height
+                            - fresh_page_contextual_space_before(
+                                &blocks[block_idx],
+                                &state.prev_style_id,
+                            );
+                        let should_move = match keep_next_terminal_table(blocks, block_idx) {
+                            Some(LayoutBlock::Table {
+                                rows,
+                                col_widths,
+                                border_config,
+                                ..
+                            }) if !rows.is_empty() => {
+                                let current_available =
+                                    state.bottom - current_group_top - group_height;
+                                let full_page_available =
+                                    full_page_height - fresh_page_group_height;
+                                let leading_group_height = measure_leading_table_group_height(
+                                    rows,
+                                    col_widths,
+                                    ctx.default_line_height,
+                                    border_config.as_ref(),
+                                    ctx.measure_text,
+                                    false,
+                                );
+                                leading_group_height.is_some_and(|height| {
+                                    height <= full_page_available && height > current_available
+                                })
+                            }
+                            _ => {
+                                fresh_page_group_height <= full_page_height
+                                    && current_group_top + group_height > state.bottom
+                            }
+                        };
+                        if should_move && state.cursor_y > state.column_top {
+                            state.push_new_page(block_idx, &ctx);
+                            state.prev_space_after = Pt::ZERO;
+                        }
+                    }
+                }
+
                 let mut effective_style = style.clone_for_layout();
 
                 // Log paragraph info.
@@ -223,9 +398,6 @@ pub fn layout_section(
                     state.cursor_y.raw(), state.current_col,
                     state.page_floats.len(), state.current_page_abs_floats.len()
                 );
-
-                // Save page state for potential keepNext rollback.
-                let cmds_before_para = state.current_page.commands.len();
 
                 // §17.3.1.33: suppress space_before for the structural first
                 // paragraph of a section on its initial page.
@@ -546,69 +718,6 @@ pub fn layout_section(
                 // no non-empty chunk followed, defer the break to the next block.
                 if unresolved_page_break {
                     state.pending_page_break = true;
-                }
-
-                // §17.3.1.14: keepNext — if this paragraph has keep_next, check
-                // whether the next block fits. If not, undo placement and page-break.
-                if effective_style.keep_next
-                    && state.cursor_y > state.column_top
-                    && block_idx + 1 < blocks.len()
-                    && num_cols <= 1
-                // skip for multi-column (too complex)
-                {
-                    let next_fits = match &blocks[block_idx + 1] {
-                        LayoutBlock::Paragraph {
-                            fragments: next_frags,
-                            style: next_style,
-                            ..
-                        } => {
-                            let mut next_eff = next_style.clone_for_layout();
-                            let next_collapse =
-                                effective_style.space_after.min(next_eff.space_before);
-                            let next_cursor = state.cursor_y - next_collapse;
-                            let next_constraints = col_constraints(state.current_col);
-                            next_eff.page_y = next_cursor;
-                            next_eff.page_x = col_x(state.current_col);
-                            next_eff.page_content_width = config.columns[state.current_col].width;
-                            let next_para = layout_paragraph(
-                                next_frags,
-                                &next_constraints,
-                                &next_eff,
-                                ctx.default_line_height,
-                                ctx.measure_text,
-                            );
-                            next_cursor + next_para.size.height <= state.bottom
-                        }
-                        LayoutBlock::Table { .. } => true, // don't keepNext with tables
-                    };
-
-                    if !next_fits {
-                        // Undo this paragraph's commands, then page-break.
-                        state.current_page.commands.truncate(cmds_before_para);
-                        state.push_new_page(block_idx, &ctx);
-
-                        // Re-layout the paragraph on the fresh page.
-                        // keepNext paragraphs at page top retain their space_before.
-                        let constraints = col_constraints(state.current_col);
-                        effective_style.page_y = state.cursor_y;
-                        effective_style.page_x = col_x(state.current_col);
-                        effective_style.page_content_width =
-                            config.columns[state.current_col].width;
-                        effective_style.page_floats = Vec::new();
-                        let para = layout_paragraph(
-                            fragments,
-                            &constraints,
-                            &effective_style,
-                            ctx.default_line_height,
-                            ctx.measure_text,
-                        );
-                        for mut cmd in para.commands {
-                            cmd.shift_y(state.cursor_y);
-                            cmd.shift_x(col_x(state.current_col));
-                            state.current_page.commands.push(cmd);
-                        }
-                        state.cursor_y += para.size.height;
-                    }
                 }
 
                 state.first_on_section_page = false;

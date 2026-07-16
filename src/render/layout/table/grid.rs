@@ -44,19 +44,7 @@ pub(super) fn build_row_groups(rows: &[TableRowInput], measured: &MeasuredTable)
     let mut i = 0;
     while i < rows.len() {
         let start = i;
-        // Extend through vMerge Continue rows.
-        i += 1;
-        while i < rows.len() {
-            let has_continue = rows[i]
-                .cells
-                .iter()
-                .any(|c| c.vertical_merge == Some(VerticalMergeState::Continue));
-            if has_continue {
-                i += 1;
-            } else {
-                break;
-            }
-        }
+        i = row_group_end(rows, start);
         let height: Pt = measured.rows[start..i]
             .iter()
             .map(|mr| mr.height + mr.border_gap_below)
@@ -82,6 +70,20 @@ pub(super) fn build_row_groups(rows: &[TableRowInput], measured: &MeasuredTable)
         });
     }
     groups
+}
+
+/// Return the exclusive end of the paginator's atomic row group at `start`.
+pub(super) fn row_group_end(rows: &[TableRowInput], start: usize) -> usize {
+    let mut end = start + 1;
+    while end < rows.len()
+        && rows[end]
+            .cells
+            .iter()
+            .any(|cell| cell.vertical_merge == Some(VerticalMergeState::Continue))
+    {
+        end += 1;
+    }
+    end
 }
 
 fn cell_has_nested_table(cell: &TableCellInput) -> bool {

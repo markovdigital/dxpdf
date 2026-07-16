@@ -20,9 +20,44 @@ pub use grid::compute_column_widths;
 pub use types::*;
 
 use emit::{emit_split_row, emit_table_rows, TableCommandBuffers};
-use grid::build_row_groups;
+use grid::{build_row_groups, row_group_end};
 use measure::measure_table_rows;
 use split::{find_row_cut, split_row_at, RowCutInput};
+
+/// Measure the first atomic paginator row group without emitting table commands.
+///
+/// The following row is included only to resolve the group's shared bottom
+/// border; later rows and groups are neither measured nor paginated.
+pub(crate) fn measure_leading_table_group_height(
+    rows: &[TableRowInput],
+    col_widths: &[Pt],
+    default_line_height: Pt,
+    borders: Option<&TableBorderConfig>,
+    measure_text: super::paragraph::MeasureTextFn<'_>,
+    suppress_first_row_top: bool,
+) -> Option<Pt> {
+    if rows.is_empty() || col_widths.is_empty() {
+        return None;
+    }
+
+    let group_end = row_group_end(rows, 0);
+    let measured_end = (group_end + 1).min(rows.len());
+    let measured = measure_table_rows(
+        &rows[..measured_end],
+        col_widths,
+        default_line_height,
+        borders,
+        measure_text,
+        suppress_first_row_top,
+    );
+
+    Some(
+        measured.rows[..group_end]
+            .iter()
+            .map(|row| row.height + row.border_gap_below)
+            .sum(),
+    )
+}
 
 /// Lay out a table: compute column widths, lay out cells, emit borders.
 ///
