@@ -4,12 +4,46 @@
 
 use serde::{Deserialize, Deserializer};
 
+use super::integer_measure::IntegerMeasure;
 use crate::model::dimension::{Dimension, Unit};
+
+pub(crate) fn deserialize_nonnegative_dimension<'de, D, U>(
+    deserializer: D,
+) -> Result<Dimension<U>, D::Error>
+where
+    D: Deserializer<'de>,
+    U: Unit,
+{
+    let measure = IntegerMeasure::deserialize(deserializer)?;
+    if measure.is_negative() {
+        return Err(serde::de::Error::custom(
+            "negative value is not valid for this OOXML measurement",
+        ));
+    }
+    Ok(Dimension::new(measure.value()))
+}
+
+pub(crate) fn deserialize_optional_nonnegative_dimension<'de, D, U>(
+    deserializer: D,
+) -> Result<Option<Dimension<U>>, D::Error>
+where
+    D: Deserializer<'de>,
+    U: Unit,
+{
+    Option::<IntegerMeasure>::deserialize(deserializer)?.map_or(Ok(None), |measure| {
+        if measure.is_negative() {
+            Err(serde::de::Error::custom(
+                "negative value is not valid for this OOXML measurement",
+            ))
+        } else {
+            Ok(Some(Dimension::new(measure.value())))
+        }
+    })
+}
 
 impl<'de, U: Unit> Deserialize<'de> for Dimension<U> {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let raw = i64::deserialize(d)?;
-        Ok(Dimension::new(raw))
+        Ok(Dimension::new(IntegerMeasure::deserialize(d)?.value()))
     }
 }
 

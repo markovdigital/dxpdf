@@ -178,3 +178,14 @@ fn convert_num(n: NumXml) -> NumberingInstance {
         level_overrides,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numbering_ids_remain_strict_integers() {
+        let xml = br#"<numbering><abstractNum abstractNumId="1.0"/></numbering>"#;
+        assert!(parse_numbering(xml).is_err());
+    }
+}

@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use crate::docx::model::dimension::{Dimension, Twips};
 use crate::docx::model::geometry::{EdgeInsets, PartialEdgeInsets};
+use crate::docx::parse::primitives::units::deserialize_optional_nonnegative_dimension;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
 pub(crate) struct EdgeInsetsTwipsXml {
@@ -23,7 +24,11 @@ pub(crate) struct EdgeInsetsTwipsXml {
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 struct SideXml {
-    #[serde(rename = "@w", default)]
+    #[serde(
+        rename = "@w",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     w: Option<Dimension<Twips>>,
 }
 

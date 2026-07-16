@@ -12,6 +12,7 @@ use crate::docx::model::{
     SectionRevisionIds, SectionType,
 };
 use crate::docx::parse::primitives::st_enums::{StNumberFormat, StPageOrientation, StSectionMark};
+use crate::docx::parse::primitives::units::deserialize_optional_nonnegative_dimension;
 use crate::docx::parse::primitives::OnOff;
 
 /// `<w:sectPr>` root.
@@ -59,9 +60,17 @@ pub(crate) enum SectChildXml {
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub(crate) struct PgSzXml {
-    #[serde(rename = "@w", default)]
+    #[serde(
+        rename = "@w",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     w: Option<Dimension<Twips>>,
-    #[serde(rename = "@h", default)]
+    #[serde(
+        rename = "@h",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     h: Option<Dimension<Twips>>,
     #[serde(rename = "@orient", default)]
     orient: Option<StPageOrientation>,
@@ -69,19 +78,47 @@ pub(crate) struct PgSzXml {
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub(crate) struct PgMarXml {
-    #[serde(rename = "@top", default)]
+    #[serde(
+        rename = "@top",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     top: Option<Dimension<Twips>>,
-    #[serde(rename = "@right", default)]
+    #[serde(
+        rename = "@right",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     right: Option<Dimension<Twips>>,
-    #[serde(rename = "@bottom", default)]
+    #[serde(
+        rename = "@bottom",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     bottom: Option<Dimension<Twips>>,
-    #[serde(rename = "@left", default)]
+    #[serde(
+        rename = "@left",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     left: Option<Dimension<Twips>>,
-    #[serde(rename = "@header", default)]
+    #[serde(
+        rename = "@header",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     header: Option<Dimension<Twips>>,
-    #[serde(rename = "@footer", default)]
+    #[serde(
+        rename = "@footer",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     footer: Option<Dimension<Twips>>,
-    #[serde(rename = "@gutter", default)]
+    #[serde(
+        rename = "@gutter",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     gutter: Option<Dimension<Twips>>,
 }
 
@@ -89,7 +126,11 @@ pub(crate) struct PgMarXml {
 pub(crate) struct ColsXml {
     #[serde(rename = "@num", default)]
     num: Option<u32>,
-    #[serde(rename = "@space", default)]
+    #[serde(
+        rename = "@space",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     space: Option<Dimension<Twips>>,
     #[serde(rename = "@equalWidth", default)]
     equal_width: Option<OnOffFromAttr>,
@@ -101,9 +142,17 @@ use crate::docx::parse::primitives::AttrBool as OnOffFromAttr;
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub(crate) struct ColXml {
-    #[serde(rename = "@w", default)]
+    #[serde(
+        rename = "@w",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     w: Option<Dimension<Twips>>,
-    #[serde(rename = "@space", default)]
+    #[serde(
+        rename = "@space",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     space: Option<Dimension<Twips>>,
 }
 
@@ -111,9 +160,17 @@ pub(crate) struct ColXml {
 pub(crate) struct DocGridXml {
     #[serde(rename = "@type", default)]
     ty: Option<StDocGrid>,
-    #[serde(rename = "@linePitch", default)]
+    #[serde(
+        rename = "@linePitch",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     line_pitch: Option<Dimension<Twips>>,
-    #[serde(rename = "@charSpace", default)]
+    #[serde(
+        rename = "@charSpace",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     char_space: Option<Dimension<FractionPoints>>,
 }
 

@@ -15,12 +15,13 @@ use crate::docx::parse::primitives::st_enums::{
     StAnchor, StHeightRule, StJc, StTblLayoutType, StTblOverlap, StTextDirection, StVerticalJc,
     StXAlign, StYAlign,
 };
+use crate::docx::parse::primitives::units::deserialize_optional_nonnegative_dimension;
 use crate::docx::parse::primitives::OnOff;
 
 use super::border::{TableBordersXml, TableCellBordersXml};
 use super::cnf_style::CnfStyleXml;
 use super::insets::EdgeInsetsTwipsXml;
-use super::measure::TableMeasureXml;
+use super::measure::{deserialize_optional_nonnegative_table_measure, TableMeasureXml};
 use super::shading::ShdXml;
 
 // ── tblPr ───────────────────────────────────────────────────────────────
@@ -35,13 +36,21 @@ pub(crate) struct TblPrXml {
     tbl_cell_mar: Option<EdgeInsetsTwipsXml>,
     #[serde(rename = "jc", default)]
     jc: Option<ValAttr<StJc>>,
-    #[serde(rename = "tblW", default)]
+    #[serde(
+        rename = "tblW",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_table_measure"
+    )]
     tbl_w: Option<TableMeasureXml>,
     #[serde(rename = "tblLayout", default)]
     tbl_layout: Option<TblLayoutXml>,
     #[serde(rename = "tblInd", default)]
     tbl_ind: Option<TableMeasureXml>,
-    #[serde(rename = "tblCellSpacing", default)]
+    #[serde(
+        rename = "tblCellSpacing",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_table_measure"
+    )]
     tbl_cell_spacing: Option<TableMeasureXml>,
     #[serde(rename = "tblLook", default)]
     tbl_look: Option<TblLookXml>,
@@ -141,13 +150,29 @@ impl<'de> Deserialize<'de> for TblLookHex {
 /// `<w:tblpPr>` — floating table positioning.
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub(crate) struct TblpPrXml {
-    #[serde(rename = "@leftFromText", default)]
+    #[serde(
+        rename = "@leftFromText",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     left_from_text: Option<crate::docx::model::dimension::Dimension<Twips>>,
-    #[serde(rename = "@rightFromText", default)]
+    #[serde(
+        rename = "@rightFromText",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     right_from_text: Option<crate::docx::model::dimension::Dimension<Twips>>,
-    #[serde(rename = "@topFromText", default)]
+    #[serde(
+        rename = "@topFromText",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     top_from_text: Option<crate::docx::model::dimension::Dimension<Twips>>,
-    #[serde(rename = "@bottomFromText", default)]
+    #[serde(
+        rename = "@bottomFromText",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     bottom_from_text: Option<crate::docx::model::dimension::Dimension<Twips>>,
     #[serde(rename = "@vertAnchor", default)]
     vert_anchor: Option<StAnchor>,
@@ -275,17 +300,29 @@ pub(crate) struct TrPrXml {
     cnf_style: Option<CnfStyleXml>,
     #[serde(rename = "gridBefore", default)]
     grid_before: Option<ValAttr<u32>>,
-    #[serde(rename = "wBefore", default)]
+    #[serde(
+        rename = "wBefore",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_table_measure"
+    )]
     w_before: Option<TableMeasureXml>,
     #[serde(rename = "gridAfter", default)]
     grid_after: Option<ValAttr<u32>>,
-    #[serde(rename = "wAfter", default)]
+    #[serde(
+        rename = "wAfter",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_table_measure"
+    )]
     w_after: Option<TableMeasureXml>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub(crate) struct TrHeightXml {
-    #[serde(rename = "@val", default)]
+    #[serde(
+        rename = "@val",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     val: Option<crate::docx::model::dimension::Dimension<Twips>>,
     #[serde(rename = "@hRule", default)]
     rule: Option<StHeightRule>,
@@ -327,7 +364,11 @@ pub(crate) struct TcPrXml {
     tc_borders: Option<TableCellBordersXml>,
     #[serde(rename = "tcMar", default)]
     tc_mar: Option<EdgeInsetsTwipsXml>,
-    #[serde(rename = "tcW", default)]
+    #[serde(
+        rename = "tcW",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_table_measure"
+    )]
     tc_w: Option<TableMeasureXml>,
     #[serde(rename = "shd", default)]
     shd: Option<ShdXml>,
@@ -435,6 +476,13 @@ mod tests {
             TableMeasure::Pct(d) => assert_eq!(d.raw(), 5000),
             other => panic!("expected Pct, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn negative_decimal_table_width_is_rejected() {
+        let parsed: Result<TblPrXml, _> =
+            quick_xml::de::from_str(r#"<tblPr><tblW w="-1.5" type="dxa"/></tblPr>"#);
+        assert!(parsed.is_err(), "negative table widths must be rejected");
     }
 
     #[test]

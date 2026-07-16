@@ -14,6 +14,7 @@ use crate::docx::model::{
     AdjCoord, AdjPoint, AdjustHandle, ConnectionSite, CustomGeometry, GeomGuide, PathCommand,
     PathDef, PathFillMode, TextRect,
 };
+use crate::docx::parse::primitives::units::deserialize_optional_nonnegative_dimension;
 
 // ── CustomGeometry ────────────────────────────────────────────────────────
 
@@ -131,9 +132,17 @@ pub struct PathListXml {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct PathXml {
-    #[serde(rename = "@w", default)]
+    #[serde(
+        rename = "@w",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub w: Option<Dimension<Emu>>,
-    #[serde(rename = "@h", default)]
+    #[serde(
+        rename = "@h",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub h: Option<Dimension<Emu>>,
     #[serde(rename = "@fill", default)]
     pub fill: Option<StPathFillMode>,

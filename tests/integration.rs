@@ -62,6 +62,25 @@ fn convert_simple_docx_to_pdf() {
 }
 
 #[test]
+fn decimal_integer_measurements_convert_without_preprocessing() {
+    let docx = simple_docx(
+        r#"<w:p>
+              <w:pPr><w:spacing w:before="252.00000000000003"/></w:pPr>
+              <w:r><w:t>Measured paragraph</w:t></w:r>
+            </w:p>
+            <w:tbl>
+              <w:tblPr><w:tblW w:w="5000.0" w:type="dxa"/></w:tblPr>
+              <w:tblGrid><w:gridCol w:w="5000.0"/></w:tblGrid>
+              <w:tr><w:tc><w:tcPr><w:tcW w:w="5000.0" w:type="dxa"/></w:tcPr>
+                <w:p><w:r><w:t>Measured cell</w:t></w:r></w:p>
+              </w:tc></w:tr>
+            </w:tbl>"#,
+    );
+    let pdf = dxpdf::convert(&docx).unwrap();
+    assert_eq!(&pdf[..5], b"%PDF-");
+}
+
+#[test]
 fn convert_formatted_docx_to_pdf() {
     let docx = simple_docx(
         r#"<w:p>

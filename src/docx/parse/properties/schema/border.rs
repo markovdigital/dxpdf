@@ -11,6 +11,7 @@ use serde::Deserialize;
 use crate::docx::model::dimension::{Dimension, EighthPoints, Points};
 use crate::docx::model::{Border, Color, ParagraphBorders, TableBorders, TableCellBorders};
 use crate::docx::parse::primitives::st_enums::StBorderType;
+use crate::docx::parse::primitives::units::deserialize_optional_nonnegative_dimension;
 use crate::docx::parse::primitives::HexColor;
 
 /// A single `<w:top w:val="..." w:sz="..." w:space="..." w:color="..."/>` etc.
@@ -18,9 +19,17 @@ use crate::docx::parse::primitives::HexColor;
 pub(crate) struct BorderXml {
     #[serde(rename = "@val")]
     val: StBorderType,
-    #[serde(rename = "@sz", default)]
+    #[serde(
+        rename = "@sz",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     sz: Option<Dimension<EighthPoints>>,
-    #[serde(rename = "@space", default)]
+    #[serde(
+        rename = "@space",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     space: Option<Dimension<Points>>,
     #[serde(rename = "@color", default)]
     color: Option<HexColor>,

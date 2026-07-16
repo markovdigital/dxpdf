@@ -10,6 +10,7 @@ use serde::Deserialize;
 
 use crate::docx::model::dimension::{Dimension, ThousandthPercent};
 use crate::docx::model::TableMeasure;
+use crate::docx::parse::primitives::integer_measure::IntegerMeasure;
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,7 +24,7 @@ enum StTblWidthType {
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub(crate) struct TableMeasureXml {
     #[serde(rename = "@w", default)]
-    w: Option<i64>,
+    w: Option<IntegerMeasure>,
     #[serde(rename = "@type", default = "default_type")]
     ty: StTblWidthType,
 }
@@ -34,13 +35,33 @@ fn default_type() -> StTblWidthType {
 
 impl From<TableMeasureXml> for TableMeasure {
     fn from(x: TableMeasureXml) -> Self {
+        let value = x.w.map(IntegerMeasure::value).unwrap_or(0);
         match x.ty {
             StTblWidthType::Auto => Self::Auto,
             StTblWidthType::Nil => Self::Nil,
-            StTblWidthType::Dxa => Self::Twips(Dimension::new(x.w.unwrap_or(0))),
-            StTblWidthType::Pct => Self::Pct(Dimension::<ThousandthPercent>::new(x.w.unwrap_or(0))),
+            StTblWidthType::Dxa => Self::Twips(Dimension::new(value)),
+            StTblWidthType::Pct => Self::Pct(Dimension::<ThousandthPercent>::new(value)),
         }
     }
+}
+
+pub(crate) fn deserialize_optional_nonnegative_table_measure<'de, D>(
+    deserializer: D,
+) -> Result<Option<TableMeasureXml>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let measure = Option::<TableMeasureXml>::deserialize(deserializer)?;
+    if measure
+        .as_ref()
+        .and_then(|value| value.w.as_ref())
+        .is_some_and(IntegerMeasure::is_negative)
+    {
+        return Err(serde::de::Error::custom(
+            "negative value is not valid for this OOXML table measurement",
+        ));
+    }
+    Ok(measure)
 }
 
 #[cfg(test)]
@@ -83,5 +104,17 @@ mod tests {
     #[test]
     fn missing_type_defaults_to_auto() {
         assert!(matches!(parse(r#"<tblW/>"#), TableMeasure::Auto));
+    }
+
+    #[test]
+    fn decimal_widths_round_to_nearest_integer() {
+        match parse(r#"<tblW w="2500.4" type="dxa"/>"#) {
+            TableMeasure::Twips(d) => assert_eq!(d.raw(), 2500),
+            other => panic!("expected Twips, got {other:?}"),
+        }
+        match parse(r#"<tblW w="2500.5" type="dxa"/>"#) {
+            TableMeasure::Twips(d) => assert_eq!(d.raw(), 2501),
+            other => panic!("expected Twips, got {other:?}"),
+        }
     }
 }

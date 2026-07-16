@@ -7,9 +7,10 @@
 
 use serde::Deserialize;
 
-use crate::docx::model::dimension::{Dimension, HalfPoints, Twips};
+use crate::docx::model::dimension::{Dimension, HalfPoints, Twips, Unit};
 use crate::docx::model::{RunProperties, StrikeStyle, StyleId, TextScale, UnderlineStyle};
 use crate::docx::parse::primitives::st_enums::{StHighlightColor, StUnderline, StVerticalAlignRun};
+use crate::docx::parse::primitives::units::deserialize_nonnegative_dimension;
 use crate::docx::parse::primitives::{HexColor, OnOff};
 
 use super::border::BorderXml;
@@ -35,7 +36,7 @@ pub(crate) struct RPrXml {
     r_fonts: Option<RFontsXml>,
 
     #[serde(rename = "sz", default)]
-    sz: Option<ValAttr<Dimension<HalfPoints>>>,
+    sz: Option<NonNegativeDimensionVal<HalfPoints>>,
     // Complex-script counterparts are intentionally ignored — renderer uses a single size.
     #[serde(rename = "b", default)]
     b: Vec<OnOff>,
@@ -61,7 +62,7 @@ pub(crate) struct RPrXml {
     #[serde(rename = "spacing", default)]
     spacing: Option<ValAttr<Dimension<Twips>>>,
     #[serde(rename = "kern", default)]
-    kern: Option<ValAttr<Dimension<HalfPoints>>>,
+    kern: Option<NonNegativeDimensionVal<HalfPoints>>,
     /// §17.3.2.45 — `<w:w w:val="80"/>`: horizontal character scale in percent.
     #[serde(rename = "w", default)]
     char_scale: Option<ValAttr<u16>>,
@@ -133,6 +134,16 @@ pub(crate) struct ValString {
 pub(crate) struct ValAttr<T> {
     #[serde(rename = "@val")]
     val: T,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(bound(deserialize = "U: Unit"))]
+struct NonNegativeDimensionVal<U: Unit> {
+    #[serde(
+        rename = "@val",
+        deserialize_with = "deserialize_nonnegative_dimension"
+    )]
+    val: Dimension<U>,
 }
 
 impl RPrXml {
@@ -369,6 +380,12 @@ mod tests {
         // Word treats <w:w w:val="0"/> as the default 100%.
         let (rp, _) = parse(r#"<rPr><w val="0"/></rPr>"#);
         assert_eq!(rp.text_scale, Some(TextScale::NORMAL));
+    }
+
+    #[test]
+    fn negative_decimal_font_size_is_rejected() {
+        let parsed: Result<RPrXml, _> = quick_xml::de::from_str(r#"<rPr><sz val="-1.5"/></rPr>"#);
+        assert!(parsed.is_err(), "negative font sizes must be rejected");
     }
 
     #[test]

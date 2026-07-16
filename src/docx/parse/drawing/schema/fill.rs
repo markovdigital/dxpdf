@@ -14,6 +14,7 @@ use crate::docx::model::{
     GradientShadeProperties, GradientStop, PathShadeType, PatternFill, PresetPatternVal,
     RectAlignment, RelativeRect, StretchFill, TileFill, TileFlipMode,
 };
+use crate::docx::parse::primitives::units::deserialize_nonnegative_dimension;
 pub use crate::docx::parse::primitives::AttrBool;
 
 use super::color::DrawingColorXml;
@@ -91,7 +92,10 @@ pub struct GsLstXml {
 
 #[derive(Debug, Deserialize)]
 pub struct GsXml {
-    #[serde(rename = "@pos")]
+    #[serde(
+        rename = "@pos",
+        deserialize_with = "deserialize_nonnegative_dimension"
+    )]
     pub pos: Dimension<ThousandthPercent>,
     #[serde(rename = "$value")]
     pub color: DrawingColorXml,

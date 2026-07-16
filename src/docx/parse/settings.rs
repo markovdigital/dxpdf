@@ -5,6 +5,7 @@ use serde::Deserialize;
 use crate::docx::dimension::{Dimension, Twips};
 use crate::docx::error::Result;
 use crate::docx::model::{DocumentSettings, RevisionSaveId};
+use crate::docx::parse::primitives::units::deserialize_nonnegative_dimension;
 use crate::docx::parse::primitives::OnOff;
 use crate::docx::parse::serde_xml::from_xml;
 
@@ -35,7 +36,10 @@ struct RsidsXml {
 #[derive(Deserialize)]
 #[serde(bound(deserialize = "U: crate::docx::dimension::Unit"))]
 struct DimensionVal<U: crate::docx::dimension::Unit> {
-    #[serde(rename = "@val")]
+    #[serde(
+        rename = "@val",
+        deserialize_with = "deserialize_nonnegative_dimension"
+    )]
     val: Dimension<U>,
 }
 

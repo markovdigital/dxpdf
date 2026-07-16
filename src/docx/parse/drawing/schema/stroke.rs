@@ -13,13 +13,20 @@ use crate::docx::model::{
     CompoundLine, DashStop, LineCap, LineDash, LineEnd, LineEndSize, LineEndType, LineJoin,
     Outline, PenAlignment, PresetLineDashVal,
 };
+use crate::docx::parse::primitives::units::{
+    deserialize_nonnegative_dimension, deserialize_optional_nonnegative_dimension,
+};
 
 use super::fill::DrawingFillXml;
 
 /// `<a:ln …>` — outline (§20.1.2.2.24 CT_LineProperties).
 #[derive(Debug, Deserialize)]
 pub struct OutlineXml {
-    #[serde(rename = "@w", default)]
+    #[serde(
+        rename = "@w",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub w: Option<Dimension<Emu>>,
     #[serde(rename = "@cap", default)]
     pub cap: Option<StLineCap>,
@@ -85,15 +92,19 @@ pub struct CustDashXml {
 
 #[derive(Debug, Deserialize)]
 pub struct DsXml {
-    #[serde(rename = "@d")]
+    #[serde(rename = "@d", deserialize_with = "deserialize_nonnegative_dimension")]
     pub d: Dimension<ThousandthPercent>,
-    #[serde(rename = "@sp")]
+    #[serde(rename = "@sp", deserialize_with = "deserialize_nonnegative_dimension")]
     pub sp: Dimension<ThousandthPercent>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct MiterXml {
-    #[serde(rename = "@lim", default)]
+    #[serde(
+        rename = "@lim",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub lim: Option<Dimension<ThousandthPercent>>,
 }
 

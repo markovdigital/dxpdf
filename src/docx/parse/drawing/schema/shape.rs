@@ -20,6 +20,9 @@ use crate::docx::model::{
     PresetShapeType, ShapeGeometry, ShapeProperties, StyleMatrixRef, TextAnchoringType,
     TextAutoFit, TextVerticalType, TextWrappingType, Transform2D, WordProcessingShape,
 };
+use crate::docx::parse::primitives::units::{
+    deserialize_nonnegative_dimension, deserialize_optional_nonnegative_dimension,
+};
 
 use super::color::DrawingColorXml;
 use super::effect::EffectListXml;
@@ -135,9 +138,9 @@ pub struct OffXml {
 
 #[derive(Debug, Deserialize)]
 pub struct ExtXml {
-    #[serde(rename = "@cx")]
+    #[serde(rename = "@cx", deserialize_with = "deserialize_nonnegative_dimension")]
     pub cx: Dimension<Emu>,
-    #[serde(rename = "@cy")]
+    #[serde(rename = "@cy", deserialize_with = "deserialize_nonnegative_dimension")]
     pub cy: Dimension<Emu>,
 }
 
@@ -399,13 +402,29 @@ pub struct BodyPrXml {
     pub vert: Option<StTextVerticalType>,
     #[serde(rename = "@wrap", default)]
     pub wrap: Option<StTextWrappingType>,
-    #[serde(rename = "@lIns", default)]
+    #[serde(
+        rename = "@lIns",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub l_ins: Option<Dimension<Emu>>,
-    #[serde(rename = "@tIns", default)]
+    #[serde(
+        rename = "@tIns",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub t_ins: Option<Dimension<Emu>>,
-    #[serde(rename = "@rIns", default)]
+    #[serde(
+        rename = "@rIns",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub r_ins: Option<Dimension<Emu>>,
-    #[serde(rename = "@bIns", default)]
+    #[serde(
+        rename = "@bIns",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub b_ins: Option<Dimension<Emu>>,
     #[serde(rename = "@anchor", default)]
     pub anchor: Option<StTextAnchoringType>,

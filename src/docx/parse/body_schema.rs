@@ -22,6 +22,7 @@ use crate::docx::dimension::{Dimension, Twips};
 use crate::docx::parse::primitives::st_enums::{
     StBrClear, StFldCharType, StPTabAlignment, StPTabLeader, StPTabRelativeTo,
 };
+use crate::docx::parse::primitives::units::deserialize_optional_nonnegative_dimension;
 use crate::docx::parse::properties::schema::paragraph::PPrXml;
 use crate::docx::parse::properties::schema::run::RPrXml;
 use crate::docx::parse::properties::schema::section::SectPrXml;
@@ -493,7 +494,11 @@ pub(crate) struct TblGridXml {
 
 #[derive(Deserialize)]
 pub(crate) struct GridColXml {
-    #[serde(rename = "@w", default)]
+    #[serde(
+        rename = "@w",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub w: Option<Dimension<Twips>>,
 }
 

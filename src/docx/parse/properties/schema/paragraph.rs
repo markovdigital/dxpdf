@@ -16,6 +16,7 @@ use crate::docx::parse::primitives::st_enums::{
     StAnchor, StFrameWrap, StHeightRule, StJc, StLineSpacingRule, StTextAlignment, StXAlign,
     StYAlign,
 };
+use crate::docx::parse::primitives::units::deserialize_optional_nonnegative_dimension;
 use crate::docx::parse::primitives::OnOff;
 
 use super::border::ParagraphBordersXml;
@@ -137,9 +138,17 @@ impl From<IndXml> for Indentation {
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 struct SpacingXml {
-    #[serde(rename = "@before", default)]
+    #[serde(
+        rename = "@before",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     before: Option<Dimension<Twips>>,
-    #[serde(rename = "@after", default)]
+    #[serde(
+        rename = "@after",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     after: Option<Dimension<Twips>>,
     #[serde(rename = "@line", default)]
     line: Option<Dimension<Twips>>,
@@ -186,13 +195,29 @@ struct FramePrXml {
     drop_cap: Option<StDropCap>,
     #[serde(rename = "@lines", default)]
     lines: Option<u32>,
-    #[serde(rename = "@hSpace", default)]
+    #[serde(
+        rename = "@hSpace",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     h_space: Option<Dimension<Twips>>,
-    #[serde(rename = "@vSpace", default)]
+    #[serde(
+        rename = "@vSpace",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     v_space: Option<Dimension<Twips>>,
-    #[serde(rename = "@w", default)]
+    #[serde(
+        rename = "@w",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     w: Option<Dimension<Twips>>,
-    #[serde(rename = "@h", default)]
+    #[serde(
+        rename = "@h",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     h: Option<Dimension<Twips>>,
     #[serde(rename = "@hRule", default)]
     h_rule: Option<StHeightRule>,
@@ -377,6 +402,12 @@ mod tests {
         let ind = r.properties.indentation.unwrap();
         assert_eq!(ind.start.unwrap().raw(), 720);
         assert_eq!(ind.end.unwrap().raw(), 360);
+    }
+
+    #[test]
+    fn negative_decimal_indentation_remains_valid() {
+        let r = parse(r#"<pPr><ind start="-1.5"/></pPr>"#);
+        assert_eq!(r.properties.indentation.unwrap().start.unwrap().raw(), -2);
     }
 
     #[test]

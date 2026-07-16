@@ -16,6 +16,7 @@ use crate::docx::model::{
 
 use super::color::DrawingColorXml;
 use super::fill::{AttrBool, DrawingFillXml, StRectAlignment};
+use crate::docx::parse::primitives::units::deserialize_optional_nonnegative_dimension;
 
 // ── Top-level effect list ─────────────────────────────────────────────────
 
@@ -49,7 +50,11 @@ pub enum EffectXml {
 
 #[derive(Debug, Deserialize)]
 pub struct BlurXml {
-    #[serde(rename = "@rad", default)]
+    #[serde(
+        rename = "@rad",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub rad: Option<Dimension<Emu>>,
     #[serde(rename = "@grow", default)]
     pub grow: Option<AttrBool>,
@@ -57,23 +62,51 @@ pub struct BlurXml {
 
 #[derive(Debug, Deserialize)]
 pub struct SoftEdgeXml {
-    #[serde(rename = "@rad", default)]
+    #[serde(
+        rename = "@rad",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub rad: Option<Dimension<Emu>>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ReflectionXml {
-    #[serde(rename = "@blurRad", default)]
+    #[serde(
+        rename = "@blurRad",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub blur_rad: Option<Dimension<Emu>>,
-    #[serde(rename = "@stA", default)]
+    #[serde(
+        rename = "@stA",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub start_alpha: Option<Dimension<ThousandthPercent>>,
-    #[serde(rename = "@stPos", default)]
+    #[serde(
+        rename = "@stPos",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub start_pos: Option<Dimension<ThousandthPercent>>,
-    #[serde(rename = "@endA", default)]
+    #[serde(
+        rename = "@endA",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub end_alpha: Option<Dimension<ThousandthPercent>>,
-    #[serde(rename = "@endPos", default)]
+    #[serde(
+        rename = "@endPos",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub end_pos: Option<Dimension<ThousandthPercent>>,
-    #[serde(rename = "@dist", default)]
+    #[serde(
+        rename = "@dist",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub distance: Option<Dimension<Emu>>,
     #[serde(rename = "@dir", default)]
     pub direction: Option<Dimension<SixtieThousandthDeg>>,
@@ -105,7 +138,11 @@ pub struct FillOverlayXml {
 
 #[derive(Debug, Deserialize)]
 pub struct GlowXml {
-    #[serde(rename = "@rad", default)]
+    #[serde(
+        rename = "@rad",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub rad: Option<Dimension<Emu>>,
     #[serde(rename = "$value", default)]
     pub color: Option<DrawingColorXml>,
@@ -113,9 +150,17 @@ pub struct GlowXml {
 
 #[derive(Debug, Deserialize)]
 pub struct InnerShdwXml {
-    #[serde(rename = "@blurRad", default)]
+    #[serde(
+        rename = "@blurRad",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub blur_rad: Option<Dimension<Emu>>,
-    #[serde(rename = "@dist", default)]
+    #[serde(
+        rename = "@dist",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub distance: Option<Dimension<Emu>>,
     #[serde(rename = "@dir", default)]
     pub direction: Option<Dimension<SixtieThousandthDeg>>,
@@ -125,9 +170,17 @@ pub struct InnerShdwXml {
 
 #[derive(Debug, Deserialize)]
 pub struct OuterShdwXml {
-    #[serde(rename = "@blurRad", default)]
+    #[serde(
+        rename = "@blurRad",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub blur_rad: Option<Dimension<Emu>>,
-    #[serde(rename = "@dist", default)]
+    #[serde(
+        rename = "@dist",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub distance: Option<Dimension<Emu>>,
     #[serde(rename = "@dir", default)]
     pub direction: Option<Dimension<SixtieThousandthDeg>>,
@@ -151,7 +204,11 @@ pub struct OuterShdwXml {
 pub struct PrstShdwXml {
     #[serde(rename = "@prst")]
     pub prst: StPresetShadowVal,
-    #[serde(rename = "@dist", default)]
+    #[serde(
+        rename = "@dist",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub distance: Option<Dimension<Emu>>,
     #[serde(rename = "@dir", default)]
     pub direction: Option<Dimension<SixtieThousandthDeg>>,

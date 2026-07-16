@@ -16,6 +16,9 @@ use crate::docx::model::{
     AnchorAlignment, AnchorPosition, AnchorProperties, AnchorRelativeFrom, DocProperties,
     GraphicContent, GraphicFrameLocks, Image, ImagePlacement, TextWrap, WrapPolygon, WrapText,
 };
+use crate::docx::parse::primitives::units::{
+    deserialize_nonnegative_dimension, deserialize_optional_nonnegative_dimension,
+};
 
 use super::fill::AttrBool;
 use super::picture::PictureXml;
@@ -26,22 +29,38 @@ use super::shape::WspXml;
 /// `<wp:extent cx=".." cy=".."/>` — positive size in EMU.
 #[derive(Debug, Deserialize)]
 pub struct ExtentXml {
-    #[serde(rename = "@cx")]
+    #[serde(rename = "@cx", deserialize_with = "deserialize_nonnegative_dimension")]
     pub cx: Dimension<Emu>,
-    #[serde(rename = "@cy")]
+    #[serde(rename = "@cy", deserialize_with = "deserialize_nonnegative_dimension")]
     pub cy: Dimension<Emu>,
 }
 
 /// `<wp:effectExtent l=".." t=".." r=".." b=".."/>` — drawing overflow.
 #[derive(Debug, Deserialize)]
 pub struct EffectExtentXml {
-    #[serde(rename = "@l", default)]
+    #[serde(
+        rename = "@l",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub l: Option<Dimension<Emu>>,
-    #[serde(rename = "@t", default)]
+    #[serde(
+        rename = "@t",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub t: Option<Dimension<Emu>>,
-    #[serde(rename = "@r", default)]
+    #[serde(
+        rename = "@r",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub r: Option<Dimension<Emu>>,
-    #[serde(rename = "@b", default)]
+    #[serde(
+        rename = "@b",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub b: Option<Dimension<Emu>>,
 }
 
@@ -163,13 +182,29 @@ impl GraphicXml {
 /// `<wp:inline>` — inline drawing.
 #[derive(Deserialize)]
 pub(crate) struct InlineXml {
-    #[serde(rename = "@distT", default)]
+    #[serde(
+        rename = "@distT",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub dist_t: Option<Dimension<Emu>>,
-    #[serde(rename = "@distB", default)]
+    #[serde(
+        rename = "@distB",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub dist_b: Option<Dimension<Emu>>,
-    #[serde(rename = "@distL", default)]
+    #[serde(
+        rename = "@distL",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub dist_l: Option<Dimension<Emu>>,
-    #[serde(rename = "@distR", default)]
+    #[serde(
+        rename = "@distR",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub dist_r: Option<Dimension<Emu>>,
 
     #[serde(rename = "extent")]
@@ -207,13 +242,29 @@ impl InlineXml {
 
 #[derive(Deserialize)]
 pub(crate) struct AnchorXml {
-    #[serde(rename = "@distT", default)]
+    #[serde(
+        rename = "@distT",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub dist_t: Option<Dimension<Emu>>,
-    #[serde(rename = "@distB", default)]
+    #[serde(
+        rename = "@distB",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub dist_b: Option<Dimension<Emu>>,
-    #[serde(rename = "@distL", default)]
+    #[serde(
+        rename = "@distL",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub dist_l: Option<Dimension<Emu>>,
-    #[serde(rename = "@distR", default)]
+    #[serde(
+        rename = "@distR",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub dist_r: Option<Dimension<Emu>>,
     #[serde(rename = "@simplePos", default)]
     pub simple_pos_attr: Option<AttrBool>,
@@ -361,13 +412,29 @@ impl From<StAnchorAlignment> for AnchorAlignment {
 pub struct WrapSquareXml {
     #[serde(rename = "@wrapText")]
     pub wrap_text: StWrapText,
-    #[serde(rename = "@distT", default)]
+    #[serde(
+        rename = "@distT",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub dist_t: Option<Dimension<Emu>>,
-    #[serde(rename = "@distB", default)]
+    #[serde(
+        rename = "@distB",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub dist_b: Option<Dimension<Emu>>,
-    #[serde(rename = "@distL", default)]
+    #[serde(
+        rename = "@distL",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub dist_l: Option<Dimension<Emu>>,
-    #[serde(rename = "@distR", default)]
+    #[serde(
+        rename = "@distR",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub dist_r: Option<Dimension<Emu>>,
 }
 
@@ -375,9 +442,17 @@ pub struct WrapSquareXml {
 pub struct WrapTightThroughXml {
     #[serde(rename = "@wrapText")]
     pub wrap_text: StWrapText,
-    #[serde(rename = "@distL", default)]
+    #[serde(
+        rename = "@distL",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub dist_l: Option<Dimension<Emu>>,
-    #[serde(rename = "@distR", default)]
+    #[serde(
+        rename = "@distR",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub dist_r: Option<Dimension<Emu>>,
     #[serde(rename = "wrapPolygon", default)]
     pub polygon: Option<WrapPolygonXml>,
@@ -385,9 +460,17 @@ pub struct WrapTightThroughXml {
 
 #[derive(Debug, Deserialize)]
 pub struct WrapTopAndBottomXml {
-    #[serde(rename = "@distT", default)]
+    #[serde(
+        rename = "@distT",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub dist_t: Option<Dimension<Emu>>,
-    #[serde(rename = "@distB", default)]
+    #[serde(
+        rename = "@distB",
+        default,
+        deserialize_with = "deserialize_optional_nonnegative_dimension"
+    )]
     pub dist_b: Option<Dimension<Emu>>,
 }
 
@@ -570,6 +653,13 @@ fn polygon(p: WrapPolygonXml) -> Option<WrapPolygon> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn negative_decimal_extent_is_rejected() {
+        let parsed: Result<ExtentXml, _> =
+            quick_xml::de::from_str(r#"<extent cx="-1.5" cy="100"/>"#);
+        assert!(parsed.is_err(), "negative drawing extents must be rejected");
+    }
 
     fn parse_inline(xml: &str) -> Image {
         let wrapped = format!(
