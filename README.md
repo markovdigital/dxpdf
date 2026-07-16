@@ -119,7 +119,7 @@ dxpdf handles the most common DOCX features found in real-world business documen
 | Category | Features |
 |---|---|
 | **Text formatting** | Bold, italic, underline, highlighting, font size/family/color, character spacing, superscript/subscript, run shading |
-| **Paragraphs** | Alignment (left/center/right), spacing (before/after/line with auto/exact/atLeast), indentation, tab stops, paragraph borders, paragraph shading |
+| **Paragraphs** | Alignment (left/center/right/justify/distribute), spacing (before/after/line with auto/exact/atLeast), indentation, tab stops, paragraph borders, paragraph shading |
 | **Tables** | Column widths, cell margins (3-level cascade), merged cells (gridSpan + vMerge), row heights, borders, cell shading, nested tables |
 | **Images** | Inline images (PNG, JPEG, BMP, WebP), floating/anchored images with alignment and percentage-based positioning |
 | **Styles** | Paragraph and character styles, `basedOn` inheritance, document defaults, theme fonts |
@@ -198,7 +198,7 @@ Each layout element (paragraphs, table cells, headers/footers) goes through thre
 
 ## OOXML Feature Coverage
 
-Validated against ISO 29500 (Office Open XML). **37 features fully implemented, 9 partial, 13 planned.**
+Validated against ISO 29500 (Office Open XML). **42 features fully implemented, 9 partial, 12 planned.**
 
 <details>
 <summary>Full feature matrix (click to expand)</summary>
@@ -225,7 +225,7 @@ Validated against ISO 29500 (Office Open XML). **37 features fully implemented, 
 | Feature | Status |
 |---|---|
 | Alignment (left, center, right) | ✅ |
-| Alignment (justify) | ⚠️ parsed, renders left-aligned |
+| Alignment (justify, distribute) | ✅ |
 | Spacing before/after, line spacing | ✅ auto/exact/atLeast |
 | Indentation (left, right, first-line, hanging) | ✅ |
 | Tab stops (left) | ✅ |
@@ -233,7 +233,9 @@ Validated against ISO 29500 (Office Open XML). **37 features fully implemented, 
 | Tab stops (decimal) | ⚠️ rendered as left-aligned |
 | Paragraph shading | ✅ |
 | Paragraph borders | ✅ with adjacent border merging, `w:space` offset |
-| Keep with next, widow/orphan control | ❌ |
+| Keep with next | ✅ |
+| Keep lines together | ❌ |
+| Widow/orphan control | ❌ |
 
 ### Styles
 
@@ -251,7 +253,7 @@ Validated against ISO 29500 (Office Open XML). **37 features fully implemented, 
 | Cell widths (pct, auto) | ⚠️ fall back to grid |
 | Cell margins (3-level cascade) | ✅ |
 | Merged cells (gridSpan, vMerge) | ✅ |
-| Row heights | ✅ min / ⚠️ exact treated as min |
+| Row heights | ✅ min / ⚠️ exact as min |
 | Table borders (per-cell, per-table) | ✅ |
 | Border styles (single) | ✅ |
 | Border styles (double, dashed, dotted) | ⚠️ render as single |
@@ -286,7 +288,7 @@ Validated against ISO 29500 (Office Open XML). **37 features fully implemented, 
 | Feature | Status |
 |---|---|
 | Default header/footer | ✅ |
-| First page, even/odd, per-section | ❌ |
+| First page, even/odd, per-section | ✅ |
 
 ### Lists
 
