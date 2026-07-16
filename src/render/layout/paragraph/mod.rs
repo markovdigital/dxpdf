@@ -345,6 +345,23 @@ mod tests {
         }
     }
 
+    fn hyperlink_frag(text: &str, width: f32, url: &str) -> Fragment {
+        let mut fragment = text_frag(text, width);
+        if let Fragment::Text { hyperlink_url, .. } = &mut fragment {
+            *hyperlink_url = Some(url.to_string());
+        }
+        fragment
+    }
+
+    fn underlined_text_frag(text: &str, width: f32) -> Fragment {
+        let mut fragment = text_frag(text, width);
+        if let Fragment::Text { font, .. } = &mut fragment {
+            Rc::make_mut(font).underline = true;
+            Rc::make_mut(font).underline_thickness = Pt::new(0.5);
+        }
+        fragment
+    }
+
     fn body_constraints(width: f32) -> BoxConstraints {
         BoxConstraints::new(Pt::ZERO, Pt::new(width), Pt::ZERO, Pt::new(1000.0))
     }
@@ -491,6 +508,312 @@ mod tests {
 
         if let DrawCommand::Text { position, .. } = &result.commands[0] {
             assert_eq!(position.x.raw(), 80.0); // 100 - 20
+        }
+    }
+
+    #[test]
+    fn literal_tab_text_preserves_center_and_end_alignment() {
+        let fragments = vec![text_frag("alpha\tbeta", 20.0)];
+        for (alignment, expected_x) in [(Alignment::Center, 20.0), (Alignment::End, 40.0)] {
+            let style = ParagraphStyle {
+                alignment,
+                ..Default::default()
+            };
+            let result = layout_paragraph(
+                &fragments,
+                &body_constraints(60.0),
+                &style,
+                Pt::new(14.0),
+                None,
+            );
+            assert!((text_xs(&result)[0] - expected_x).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn structured_tab_zones_include_literal_tab_text() {
+        for (alignment, expected_xs) in [
+            (crate::model::TabAlignment::Right, [45.0, 55.0, 60.0]),
+            (crate::model::TabAlignment::Center, [62.5, 72.5, 77.5]),
+        ] {
+            let style = ParagraphStyle {
+                tabs: vec![TabStopDef {
+                    position: Pt::new(80.0),
+                    alignment,
+                    leader: crate::model::TabLeader::None,
+                }],
+                ..Default::default()
+            };
+            let result = layout_paragraph(
+                &[
+                    Fragment::Tab {
+                        line_height: Pt::new(14.0),
+                        fitting_width: Some(Pt::new(5.0)),
+                    },
+                    text_frag("alpha", 10.0),
+                    text_frag("\t", 5.0),
+                    text_frag("beta", 20.0),
+                ],
+                &body_constraints(100.0),
+                &style,
+                Pt::new(14.0),
+                None,
+            );
+            let xs = text_xs(&result);
+            for (actual, expected) in xs.iter().zip(expected_xs) {
+                assert!((actual - expected).abs() < 0.01, "xs: {xs:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn both_alignment_expands_inter_word_gaps_on_soft_wrapped_lines() {
+        let mut fragments = vec![
+            text_frag("alpha ", 25.0),
+            hyperlink_frag("beta ", 25.0, "https://example.invalid"),
+            text_frag("gamma", 30.0),
+        ];
+        if let Fragment::Text { font, .. } = &mut fragments[0] {
+            Rc::make_mut(font).underline = true;
+            Rc::make_mut(font).underline_thickness = Pt::new(0.5);
+        }
+        let style = ParagraphStyle {
+            alignment: Alignment::Both,
+            ..Default::default()
+        };
+        let result = layout_paragraph(
+            &fragments,
+            &body_constraints(60.0),
+            &style,
+            Pt::new(14.0),
+            None,
+        );
+        let xs = text_xs(&result);
+        assert!(
+            (xs[1] - 35.0).abs() < 0.01,
+            "beta must receive the 10pt gap: {xs:?}"
+        );
+        assert!(
+            (xs[2] - 0.0).abs() < 0.01,
+            "final line must remain unexpanded: {xs:?}"
+        );
+
+        let underline = result
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                DrawCommand::Underline { line, .. } => Some(*line),
+                _ => None,
+            })
+            .expect("underlined first gap");
+        assert!((underline.end.x.raw() - 35.0).abs() < 0.01);
+
+        let link_rect = result
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                DrawCommand::LinkAnnotation { rect, url } if url == "https://example.invalid" => {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("beta hyperlink annotation");
+        assert!((link_rect.origin.x.raw() - 35.0).abs() < 0.01);
+        assert!((link_rect.size.width.raw() - 25.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn both_alignment_keeps_explicit_break_lines_at_natural_width() {
+        let style = ParagraphStyle {
+            alignment: Alignment::Both,
+            ..Default::default()
+        };
+        let fragments = vec![
+            underlined_text_frag("alpha ", 25.0),
+            text_frag("beta", 25.0),
+            Fragment::LineBreak {
+                line_height: Pt::new(14.0),
+            },
+            text_frag("gamma", 30.0),
+        ];
+        let result = layout_paragraph(
+            &fragments,
+            &body_constraints(60.0),
+            &style,
+            Pt::new(14.0),
+            None,
+        );
+        assert!((text_xs(&result)[1] - 25.0).abs() < 0.01);
+        let underline = result
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                DrawCommand::Underline { line, .. } => Some(*line),
+                _ => None,
+            })
+            .expect("underlined explicit-break gap");
+        assert!((underline.end.x.raw() - 25.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn both_alignment_does_not_expand_nbsp_gaps() {
+        let style = ParagraphStyle {
+            alignment: Alignment::Both,
+            ..Default::default()
+        };
+        let fragments = vec![
+            underlined_text_frag("alpha\u{00a0}", 25.0),
+            text_frag("beta", 25.0),
+            text_frag("gamma", 30.0),
+        ];
+        let result = layout_paragraph(
+            &fragments,
+            &body_constraints(60.0),
+            &style,
+            Pt::new(14.0),
+            None,
+        );
+        assert!((text_xs(&result)[1] - 25.0).abs() < 0.01);
+        let underline = result
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                DrawCommand::Underline { line, .. } => Some(*line),
+                _ => None,
+            })
+            .expect("underlined NBSP gap");
+        assert!((underline.end.x.raw() - 25.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn both_alignment_keeps_structured_tab_lines_at_natural_width() {
+        let style = ParagraphStyle {
+            alignment: Alignment::Both,
+            ..Default::default()
+        };
+        let fragments = vec![
+            underlined_text_frag("alpha ", 25.0),
+            Fragment::Tab {
+                line_height: Pt::new(14.0),
+                fitting_width: Some(Pt::new(5.0)),
+            },
+            text_frag("beta ", 25.0),
+            text_frag("gamma", 30.0),
+        ];
+        let result = layout_paragraph(
+            &fragments,
+            &body_constraints(60.0),
+            &style,
+            Pt::new(14.0),
+            None,
+        );
+        assert!((text_xs(&result)[1] - 36.0).abs() < 0.01);
+        let underline = result
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                DrawCommand::Underline { line, .. } => Some(*line),
+                _ => None,
+            })
+            .expect("underlined structured-tab gap");
+        assert!((underline.end.x.raw() - 25.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn both_alignment_keeps_literal_tab_text_lines_at_natural_width() {
+        let style = ParagraphStyle {
+            alignment: Alignment::Both,
+            ..Default::default()
+        };
+        let fragments = vec![
+            underlined_text_frag("alpha ", 25.0),
+            text_frag("\t", 5.0),
+            text_frag("beta ", 25.0),
+            text_frag("gamma", 30.0),
+        ];
+        let result = layout_paragraph(
+            &fragments,
+            &body_constraints(60.0),
+            &style,
+            Pt::new(14.0),
+            None,
+        );
+        assert!((text_xs(&result)[2] - 30.0).abs() < 0.01);
+        let underline = result
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                DrawCommand::Underline { line, .. } => Some(*line),
+                _ => None,
+            })
+            .expect("underlined literal-tab gap");
+        assert!((underline.end.x.raw() - 25.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn both_alignment_stretches_hyperlink_run_without_changing_text_order() {
+        let style = ParagraphStyle {
+            alignment: Alignment::Both,
+            ..Default::default()
+        };
+        let result = layout_paragraph(
+            &[
+                text_frag("alpha", 10.0),
+                hyperlink_frag("beta ", 25.0, "https://example.invalid/stretched"),
+                text_frag("gamma ", 15.0),
+                text_frag("delta", 30.0),
+            ],
+            &body_constraints(60.0),
+            &style,
+            Pt::new(14.0),
+            None,
+        );
+        assert!((text_xs(&result)[2] - 45.0).abs() < 0.01);
+        let text_runs: Vec<_> = result
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                DrawCommand::Text { text, .. } => Some(text.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text_runs, ["alpha", "beta ", "gamma ", "delta"]);
+        let link_rect = result
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                DrawCommand::LinkAnnotation { rect, url }
+                    if url == "https://example.invalid/stretched" =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("stretched hyperlink annotation");
+        assert!((link_rect.origin.x.raw() - 10.0).abs() < 0.01);
+        assert!((link_rect.size.width.raw() - 35.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn start_center_and_end_alignment_positions_are_unchanged() {
+        let fragments = vec![text_frag("alpha ", 25.0), text_frag("beta", 25.0)];
+        for (alignment, expected_x) in [
+            (Alignment::Start, 0.0),
+            (Alignment::Center, 5.0),
+            (Alignment::End, 10.0),
+        ] {
+            let style = ParagraphStyle {
+                alignment,
+                ..Default::default()
+            };
+            let result = layout_paragraph(
+                &fragments,
+                &body_constraints(60.0),
+                &style,
+                Pt::new(14.0),
+                None,
+            );
+            assert!((text_xs(&result)[0] - expected_x).abs() < 0.01);
         }
     }
 

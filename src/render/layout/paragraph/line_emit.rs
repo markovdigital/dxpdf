@@ -117,6 +117,50 @@ pub(super) fn compute_line_placements(
     placements
 }
 
+fn stretchable_gap_after(fragments: &[Fragment], frag_idx: usize, line_end: usize) -> bool {
+    let Fragment::Text { text, .. } = &fragments[frag_idx] else {
+        return false;
+    };
+    text.ends_with(' ')
+        && fragments[frag_idx + 1..line_end]
+            .iter()
+            .any(|fragment| !matches!(fragment, Fragment::Bookmark { .. }))
+}
+
+fn line_has_justification_tab(fragments: &[Fragment], line_start: usize, line_end: usize) -> bool {
+    fragments[line_start..line_end].iter().any(|fragment| {
+        is_tab_like(fragment)
+            || matches!(fragment, Fragment::Text { text, .. } if text.contains('\t'))
+    })
+}
+
+fn justification_extra_after(
+    fragments: &[Fragment],
+    line: &super::super::line::FittedLine,
+    line_idx: usize,
+    line_count: usize,
+    alignment: crate::model::Alignment,
+    line_has_tabs: bool,
+    remaining: Pt,
+) -> Pt {
+    if alignment != crate::model::Alignment::Both
+        || line.has_break
+        || line_idx + 1 == line_count
+        || line_has_tabs
+        || remaining <= Pt::ZERO
+    {
+        return Pt::ZERO;
+    }
+    let gaps = (line.start..line.end)
+        .filter(|&idx| stretchable_gap_after(fragments, idx, line.end))
+        .count();
+    if gaps == 0 {
+        Pt::ZERO
+    } else {
+        remaining / gaps as f32
+    }
+}
+
 /// Emit `DrawCommand`s for all lines in a paragraph, advancing `cursor_y`
 /// by the total line height consumed.
 ///
@@ -179,8 +223,8 @@ pub(super) fn emit_line_commands(
         // horizontal positioning — paragraph alignment does not apply. Absolute
         // position tabs (§17.3.1.30) place content explicitly for the same
         // reason, so they suppress paragraph alignment too.
-        let line_has_tabs = fragments[line.start..line.end].iter().any(is_tab_like);
-        let align_offset = if line_has_tabs {
+        let line_has_tab_placement = fragments[line.start..line.end].iter().any(is_tab_like);
+        let align_offset = if line_has_tab_placement {
             Pt::ZERO
         } else {
             match style.alignment {
@@ -194,6 +238,15 @@ pub(super) fn emit_line_commands(
                 _ => Pt::ZERO,
             }
         };
+        let extra_per_gap = justification_extra_after(
+            fragments,
+            line,
+            line_idx,
+            line_placements.len(),
+            style.alignment,
+            line_has_justification_tab(fragments, line.start, line.end),
+            remaining,
+        );
 
         let x_start = indent + align_offset;
 
@@ -214,6 +267,13 @@ pub(super) fn emit_line_commands(
                     text_offset,
                     ..
                 } => {
+                    let extra_after = if stretchable_gap_after(fragments, frag_idx, line.end) {
+                        extra_per_gap
+                    } else {
+                        Pt::ZERO
+                    };
+                    let rendered_width = *width + extra_after;
+
                     // §17.3.2.32: render run-level shading behind text.
                     // Uses text bounds (ascent+descent), not full line height.
                     if let Some(bg_color) = shading {
@@ -222,7 +282,7 @@ pub(super) fn emit_line_commands(
                             rect: crate::render::geometry::PtRect::from_xywh(
                                 x,
                                 text_top,
-                                *width,
+                                rendered_width,
                                 metrics.height(),
                             ),
                             color: *bg_color,
@@ -235,7 +295,7 @@ pub(super) fn emit_line_commands(
                         let text_top = *cursor_y + line.ascent - metrics.ascent;
                         let bx = x - bdr.space;
                         let by = text_top;
-                        let bw = *width + bdr.space * 2.0;
+                        let bw = rendered_width + bdr.space * 2.0;
                         let bh = metrics.height();
                         let half = bdr.width * 0.5;
                         // Top
@@ -293,7 +353,7 @@ pub(super) fn emit_line_commands(
                         let rect = crate::render::geometry::PtRect::from_xywh(
                             x,
                             *cursor_y,
-                            *width,
+                            rendered_width,
                             line_height,
                         );
                         if url.starts_with("http://")
@@ -323,14 +383,14 @@ pub(super) fn emit_line_commands(
                         commands.push(DrawCommand::Underline {
                             line: crate::render::geometry::PtLineSegment::new(
                                 PtOffset::new(x, underline_y),
-                                PtOffset::new(x + *width, underline_y),
+                                PtOffset::new(x + rendered_width, underline_y),
                             ),
                             color: *color,
                             width: stroke_width,
                         });
                     }
 
-                    x += *width;
+                    x += rendered_width;
                 }
                 Fragment::Image {
                     size,
