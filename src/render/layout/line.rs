@@ -146,7 +146,6 @@ pub fn fit_lines_with_first(
                 text.ends_with(' ') || text.ends_with('\t')
                     || text.ends_with('-')
                     || text.ends_with('\u{2010}') // hyphen
-                    || text.ends_with('\u{2011}') // non-breaking hyphen (still a visual break point)
                     || text.ends_with('\u{2013}') // en-dash
                     || text.ends_with('\u{2014}') // em-dash
             }
@@ -287,6 +286,21 @@ mod tests {
         assert_eq!(lines[0].end, 1); // "hello " on first line
         assert_eq!(lines[1].start, 1);
         assert_eq!(lines[1].end, 3); // "world " + "end" on second line
+    }
+
+    #[test]
+    fn non_breaking_hyphen_is_not_a_break_point() {
+        let frags = vec![
+            text_frag("prefix ", 45.0),
+            text_frag("ID‑", 20.0),
+            text_frag("001", 35.0),
+        ];
+        let lines = fit_lines(&frags, Pt::new(70.0));
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].end, 1);
+        assert_eq!(lines[1].start, 1);
+        assert_eq!(lines[1].end, 3);
     }
 
     #[test]

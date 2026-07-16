@@ -101,7 +101,7 @@ fn split_into_words(text: &str) -> Vec<&str> {
             }
             // Hyphen/dash: break AFTER the hyphen (UAX #14).
             // The hyphen stays with the preceding word.
-            '-' | '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' => {
+            '-' | '\u{2010}' | '\u{2012}' | '\u{2013}' | '\u{2014}' => {
                 let end = i + ch.len_utf8();
                 if end > start {
                     words.push(&text[start..end]);
@@ -305,6 +305,11 @@ mod tests {
     #[test]
     fn split_trailing_space() {
         assert_eq!(split_into_words("hello "), vec!["hello "]);
+    }
+
+    #[test]
+    fn non_breaking_hyphen_stays_inside_word() {
+        assert_eq!(split_into_words("ID‑001"), vec!["ID‑001"]);
     }
 
     // ── L1, L2, L4: emoji cluster integration ────────────────────────────
