@@ -25,14 +25,20 @@ pub fn parse_numbering(data: &[u8]) -> Result<NumberingDefinitions> {
 
 #[derive(Deserialize, Default)]
 struct NumberingXml {
-    #[serde(rename = "abstractNum", default)]
-    abstract_nums: Vec<AbstractNumXml>,
-    #[serde(rename = "num", default)]
-    nums: Vec<NumXml>,
-    /// Picture bullets are parsed structurally here (for id resolution)
-    /// but their `<w:pict>` contents are filled in by the pre-pass.
-    #[serde(rename = "numPicBullet", default)]
-    num_pic_bullets: Vec<NumPicBulletXml>,
+    #[serde(rename = "$value", default)]
+    children: Vec<NumberingChildXml>,
+}
+
+#[derive(Deserialize)]
+enum NumberingChildXml {
+    #[serde(rename = "abstractNum")]
+    AbstractNum(AbstractNumXml),
+    #[serde(rename = "num")]
+    Num(NumXml),
+    #[serde(rename = "numPicBullet")]
+    NumPicBullet(Box<NumPicBulletXml>),
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Deserialize)]
@@ -107,27 +113,32 @@ struct ValAttr<T> {
 impl From<NumberingXml> for NumberingDefinitions {
     fn from(x: NumberingXml) -> Self {
         let mut defs = NumberingDefinitions::default();
-        for a in x.abstract_nums {
-            let id = AbstractNumId::new(a.abstract_num_id);
-            defs.abstract_nums.insert(
-                id,
-                AbstractNumbering {
-                    levels: a.levels.into_iter().map(Into::into).collect(),
-                },
-            );
-        }
-        for n in x.nums {
-            defs.numbering_instances
-                .insert(NumId::new(n.num_id), convert_num(n));
-        }
         // Picture bullets may contain a VML `<w:pict>` (e.g., an imagedata
         // reference). Numbering has no body content, so no embeds crossing
         // into body convert — pass an empty ctx.
         let mut ctx = crate::docx::parse::body::ConvertCtx::new();
-        for bullet in x.num_pic_bullets {
-            let id = NumPicBulletId::new(bullet.num_pic_bullet_id);
-            let pict = bullet.pict.map(|p| p.into_model(&mut ctx));
-            defs.pic_bullets.insert(id, NumPicBullet { id, pict });
+        for child in x.children {
+            match child {
+                NumberingChildXml::AbstractNum(a) => {
+                    let id = AbstractNumId::new(a.abstract_num_id);
+                    defs.abstract_nums.insert(
+                        id,
+                        AbstractNumbering {
+                            levels: a.levels.into_iter().map(Into::into).collect(),
+                        },
+                    );
+                }
+                NumberingChildXml::Num(n) => {
+                    defs.numbering_instances
+                        .insert(NumId::new(n.num_id), convert_num(n));
+                }
+                NumberingChildXml::NumPicBullet(bullet) => {
+                    let id = NumPicBulletId::new(bullet.num_pic_bullet_id);
+                    let pict = bullet.pict.map(|p| p.into_model(&mut ctx));
+                    defs.pic_bullets.insert(id, NumPicBullet { id, pict });
+                }
+                NumberingChildXml::Unknown => {}
+            }
         }
         defs
     }
@@ -185,7 +196,42 @@ mod tests {
 
     #[test]
     fn numbering_ids_remain_strict_integers() {
-        let xml = br#"<numbering><abstractNum abstractNumId="1.0"/></numbering>"#;
+        let xml = br#"<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="1.0"/></w:numbering>"#;
         assert!(parse_numbering(xml).is_err());
+    }
+
+    #[test]
+    fn repeated_abstract_and_concrete_numbering_definitions_are_collected() {
+        let xml = br#"
+          <w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:lvlText w:val="A%1"/></w:lvl></w:abstractNum>
+            <w:num w:numId="11"><w:abstractNumId w:val="1"/></w:num>
+            <w:abstractNum w:abstractNumId="2"><w:lvl w:ilvl="0"><w:lvlText w:val="B%1"/></w:lvl></w:abstractNum>
+            <w:num w:numId="12"><w:abstractNumId w:val="2"/></w:num>
+          </w:numbering>"#;
+        let defs = parse_numbering(xml).unwrap();
+        assert_eq!(defs.abstract_nums.len(), 2);
+        assert_eq!(defs.numbering_instances.len(), 2);
+        assert_eq!(
+            defs.numbering_instances[&NumId::new(11)].abstract_num_id,
+            AbstractNumId::new(1)
+        );
+        assert_eq!(
+            defs.numbering_instances[&NumId::new(12)].abstract_num_id,
+            AbstractNumId::new(2)
+        );
+    }
+
+    #[test]
+    fn unknown_numbering_root_children_do_not_discard_known_definitions() {
+        let xml = br#"
+          <w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:abstractNum w:abstractNumId="3"/>
+            <w:futureExtension><w:nested w:val="ignored"/></w:futureExtension>
+            <w:num w:numId="13"><w:abstractNumId w:val="3"/></w:num>
+          </w:numbering>"#;
+        let defs = parse_numbering(xml).unwrap();
+        assert!(defs.abstract_nums.contains_key(&AbstractNumId::new(3)));
+        assert!(defs.numbering_instances.contains_key(&NumId::new(13)));
     }
 }

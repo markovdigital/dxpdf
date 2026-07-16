@@ -51,6 +51,52 @@ fn simple_docx(body_content: &str) -> Vec<u8> {
     make_docx(&xml)
 }
 
+fn make_numbered_docx(document_xml: &str, numbering_xml: &str) -> Vec<u8> {
+    let buf = std::io::Cursor::new(Vec::new());
+    let mut zip = zip::ZipWriter::new(buf);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    zip.start_file("[Content_Types].xml", options).unwrap();
+    zip.write_all(
+        br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
+</Types>"#,
+    )
+    .unwrap();
+
+    zip.start_file("_rels/.rels", options).unwrap();
+    zip.write_all(
+        br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#,
+    )
+    .unwrap();
+
+    zip.start_file("word/document.xml", options).unwrap();
+    zip.write_all(document_xml.as_bytes()).unwrap();
+
+    zip.start_file("word/_rels/document.xml.rels", options)
+        .unwrap();
+    zip.write_all(
+        br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdNumbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
+</Relationships>"#,
+    )
+    .unwrap();
+
+    zip.start_file("word/numbering.xml", options).unwrap();
+    zip.write_all(numbering_xml.as_bytes()).unwrap();
+
+    zip.finish().unwrap().into_inner()
+}
+
 #[test]
 fn convert_simple_docx_to_pdf() {
     let docx = simple_docx(r#"<w:p><w:r><w:t>Hello World</w:t></w:r></w:p>"#);
@@ -58,6 +104,39 @@ fn convert_simple_docx_to_pdf() {
 
     // PDF should start with the magic bytes
     assert!(pdf.len() > 4);
+    assert_eq!(&pdf[..5], b"%PDF-");
+}
+
+#[test]
+fn convert_docx_with_two_numbering_definitions() {
+    use dxpdf::model::{AbstractNumId, NumId};
+
+    let document = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+      <w:body>
+        <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="11"/></w:numPr></w:pPr><w:r><w:t>Alpha</w:t></w:r></w:p>
+        <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="12"/></w:numPr></w:pPr><w:r><w:t>Beta</w:t></w:r></w:p>
+      </w:body>
+    </w:document>"#;
+    let numbering = r#"<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+      <w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="A%1."/></w:lvl></w:abstractNum>
+      <w:num w:numId="11"><w:abstractNumId w:val="1"/></w:num>
+      <w:abstractNum w:abstractNumId="2"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="B%1."/></w:lvl></w:abstractNum>
+      <w:num w:numId="12"><w:abstractNumId w:val="2"/></w:num>
+    </w:numbering>"#;
+    let docx = make_numbered_docx(document, numbering);
+    let parsed = dxpdf::docx::parse(&docx).unwrap();
+    assert_eq!(parsed.numbering.abstract_nums.len(), 2);
+    assert_eq!(parsed.numbering.numbering_instances.len(), 2);
+    assert_eq!(
+        parsed.numbering.numbering_instances[&NumId::new(11)].abstract_num_id,
+        AbstractNumId::new(1)
+    );
+    assert_eq!(
+        parsed.numbering.numbering_instances[&NumId::new(12)].abstract_num_id,
+        AbstractNumId::new(2)
+    );
+
+    let pdf = dxpdf::convert(&docx).unwrap();
     assert_eq!(&pdf[..5], b"%PDF-");
 }
 
