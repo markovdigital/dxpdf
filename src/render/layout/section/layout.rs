@@ -2,14 +2,16 @@
 
 use super::super::draw_command::{DrawCommand, LayoutedPage};
 use super::super::float;
+use super::super::header_footer::{HeaderFooterClearance, PageBodyBounds};
 use super::super::page::PageConfig;
 use super::super::paragraph::{layout_paragraph, ParagraphBorderStyle, ParagraphStyle};
 use super::super::table::{
-    layout_table, layout_table_paginated, measure_leading_table_group_height, TablePaginationConfig,
+    layout_table, layout_table_paginated_with_page_heights, measure_leading_table_group_height,
+    TablePaginationConfig, TablePaginationHeights,
 };
 use super::super::BoxConstraints;
 use super::floating_table::{
-    plan_floating_table_pages, resolve_floating_anchor, FloatingTableAnchor,
+    plan_floating_table_pages_with_page_tops, resolve_floating_anchor, FloatingTableAnchor,
     FloatingTablePagePlacement,
 };
 use super::helpers::{
@@ -28,11 +30,16 @@ use crate::render::geometry::PtRect;
 /// Bundles the parameters that are constant for the lifetime of a `layout_section` call.
 struct LayoutCtx<'cx> {
     config: &'cx PageConfig,
+    clearance: &'cx HeaderFooterClearance,
     measure_text: super::super::paragraph::MeasureTextFn<'cx>,
     separator_indent: Pt,
     default_line_height: Pt,
-    /// Absolute bottom boundary of the printable area (page height − bottom margin).
-    page_bottom: Pt,
+}
+
+impl LayoutCtx<'_> {
+    fn page_bounds(&self, section_page_index: usize) -> PageBodyBounds {
+        self.clearance.for_page(section_page_index)
+    }
 }
 
 /// All mutable paging state threaded through `layout_section`.
@@ -44,6 +51,10 @@ struct PageLayoutState<'doc> {
     current_page: LayoutedPage,
     /// Current vertical cursor position on the page.
     cursor_y: Pt,
+    /// 0-based physical page index within the current section.
+    page_index: usize,
+    /// Effective top boundary for the selected header slot on this page.
+    page_top: Pt,
     /// §17.6.4: current column index (0-based).
     current_col: usize,
     /// §17.6.4: y at which columns start on the current page.
@@ -81,10 +92,14 @@ struct PageLayoutState<'doc> {
 }
 
 impl<'doc> PageLayoutState<'doc> {
-    fn new(config: &PageConfig, continuation: Option<ContinuationState>, page_bottom: Pt) -> Self {
+    fn new(
+        config: &PageConfig,
+        continuation: Option<ContinuationState>,
+        bounds: PageBodyBounds,
+    ) -> Self {
         let (current_page, cursor_y) = match continuation {
             Some(c) => (c.page, c.cursor_y),
-            None => (LayoutedPage::new(config.page_size), config.margins.top),
+            None => (LayoutedPage::new(config.page_size), bounds.top),
         };
         PageLayoutState {
             pages: Vec::new(),
@@ -92,8 +107,10 @@ impl<'doc> PageLayoutState<'doc> {
             last_para_start_y: cursor_y,
             current_page,
             cursor_y,
+            page_index: 0,
+            page_top: bounds.top,
             current_col: 0,
-            bottom: page_bottom,
+            bottom: bounds.bottom,
             page_footnotes: Vec::new(),
             first_on_section_page: true,
             prev_space_after: Pt::ZERO,
@@ -118,6 +135,7 @@ impl<'doc> PageLayoutState<'doc> {
                 ctx.default_line_height,
                 ctx.measure_text,
                 ctx.separator_indent,
+                ctx.page_bounds(self.page_index).bottom,
             );
             self.page_footnotes.clear();
         }
@@ -131,10 +149,13 @@ impl<'doc> PageLayoutState<'doc> {
             &mut self.current_page,
             LayoutedPage::new(ctx.config.page_size),
         ));
-        self.cursor_y = ctx.config.margins.top;
-        self.column_top = ctx.config.margins.top;
+        self.page_index += 1;
+        let bounds = ctx.page_bounds(self.page_index);
+        self.page_top = bounds.top;
+        self.cursor_y = bounds.top;
+        self.column_top = bounds.top;
         self.current_col = 0;
-        self.bottom = ctx.page_bottom;
+        self.bottom = bounds.bottom;
         self.page_start_block = block_idx;
         self.abs_floats_dirty = true;
         self.page_floats.clear();
@@ -267,23 +288,45 @@ pub fn layout_section(
     default_line_height: Pt,
     continuation: Option<ContinuationState>,
 ) -> Vec<LayoutedPage> {
-    let content_width = config.content_width();
-    let num_cols = config.num_columns();
-    let page_bottom = config.page_size.height - config.margins.bottom;
-
-    let ctx = LayoutCtx {
+    let clearance = HeaderFooterClearance::uniform(config);
+    layout_section_with_clearance(
+        blocks,
         config,
         measure_text,
         separator_indent,
         default_line_height,
-        page_bottom,
+        continuation,
+        &clearance,
+    )
+}
+
+/// Lay out a sequence of blocks using header/footer clearances selected for
+/// each physical page in the section.
+pub(crate) fn layout_section_with_clearance(
+    blocks: &[LayoutBlock],
+    config: &PageConfig,
+    measure_text: super::super::paragraph::MeasureTextFn<'_>,
+    separator_indent: Pt,
+    default_line_height: Pt,
+    continuation: Option<ContinuationState>,
+    clearance: &HeaderFooterClearance,
+) -> Vec<LayoutedPage> {
+    let content_width = config.content_width();
+    let num_cols = config.num_columns();
+
+    let ctx = LayoutCtx {
+        config,
+        clearance,
+        measure_text,
+        separator_indent,
+        default_line_height,
     };
-    let mut state = PageLayoutState::new(config, continuation, page_bottom);
+    let mut state = PageLayoutState::new(config, continuation, clearance.for_page(0));
 
     // Column-aware constraints and x-offset for the current column.
-    let col_constraints = |col: usize| -> BoxConstraints {
+    let col_constraints = |col: usize, page_height: Pt| -> BoxConstraints {
         let col_width = config.columns[col].width;
-        BoxConstraints::new(Pt::ZERO, col_width, Pt::ZERO, config.content_height())
+        BoxConstraints::new(Pt::ZERO, col_width, Pt::ZERO, page_height)
     };
     let col_x = |col: usize| -> Pt { config.margins.left + config.columns[col].x_offset };
 
@@ -292,7 +335,7 @@ pub fn layout_section(
         // forces this block onto a new page.
         if state.pending_page_break {
             state.pending_page_break = false;
-            if state.cursor_y > config.margins.top {
+            if state.cursor_y > state.page_top {
                 state.push_new_page(block_idx, &ctx);
                 state.prev_space_after = Pt::ZERO;
             }
@@ -308,7 +351,7 @@ pub fn layout_section(
                 floating_shapes,
             } => {
                 // §17.3.1.23: force a new page before this paragraph.
-                if *page_break_before && state.cursor_y > config.margins.top {
+                if *page_break_before && state.cursor_y > state.page_top {
                     state.push_new_page(block_idx, &ctx);
                     state.prev_space_after = Pt::ZERO;
                 }
@@ -317,7 +360,10 @@ pub fn layout_section(
                     && starts_keep_next_chain(blocks, block_idx)
                     && state.page_floats.is_empty()
                 {
-                    let constraints = col_constraints(state.current_col);
+                    let constraints = col_constraints(
+                        state.current_col,
+                        (state.bottom - state.page_top).max(Pt::ZERO),
+                    );
                     if let Some(group_height) = measure_keep_next_group(
                         blocks,
                         block_idx,
@@ -338,7 +384,7 @@ pub fn layout_section(
                             }
                             LayoutBlock::Table { .. } => state.cursor_y,
                         };
-                        let full_page_height = ctx.page_bottom - config.margins.top;
+                        let full_page_height = ctx.page_bounds(state.page_index + 1).height();
                         let fresh_page_group_height = group_height
                             - fresh_page_contextual_space_before(
                                 &blocks[block_idx],
@@ -673,7 +719,10 @@ pub fn layout_section(
                                 config.columns[state.current_col].width;
                         }
 
-                        let constraints = col_constraints(state.current_col);
+                        let constraints = col_constraints(
+                            state.current_col,
+                            (state.bottom - state.page_top).max(Pt::ZERO),
+                        );
                         let para = layout_paragraph(
                             chunk,
                             &constraints,
@@ -814,7 +863,10 @@ pub fn layout_section(
                     let table = layout_table(
                         rows,
                         col_widths,
-                        &col_constraints(state.current_col),
+                        &col_constraints(
+                            state.current_col,
+                            (state.bottom - state.page_top).max(Pt::ZERO),
+                        ),
                         ctx.default_line_height,
                         border_config.as_ref(),
                         ctx.measure_text,
@@ -846,7 +898,7 @@ pub fn layout_section(
                     // the anchor. This matches Word's "don't anchor on a
                     // page that's already mostly full" behavior.
                     if state.cursor_y + table.size.height > state.bottom
-                        && state.cursor_y > config.margins.top
+                        && state.cursor_y > state.page_top
                     {
                         state.push_new_page(block_idx, &ctx);
                         state.prev_space_after = Pt::ZERO;
@@ -862,9 +914,7 @@ pub fn layout_section(
                                 crate::model::TableAnchor::Text => {
                                     state.last_para_start_y + fi.y_offset
                                 }
-                                crate::model::TableAnchor::Margin => {
-                                    config.margins.top + fi.y_offset
-                                }
+                                crate::model::TableAnchor::Margin => state.page_top + fi.y_offset,
                                 crate::model::TableAnchor::Page => fi.y_offset,
                             };
                             anchor_y.max(state.cursor_y)
@@ -895,7 +945,7 @@ pub fn layout_section(
                                 state.push_new_page(block_idx, &ctx);
                                 state.prev_space_after = Pt::ZERO;
                                 // Loop: re-resolve on the fresh page (empty
-                                // float list, cursor at margins.top).
+                                // float list, cursor at the selected page top).
                             }
                         }
                     };
@@ -906,22 +956,30 @@ pub fn layout_section(
                     // §17.4.59: paginate at row boundaries when the table
                     // would overflow. First slice gets the anchor page's
                     // remaining height (`bottom - float_y_start`);
-                    // continuation slices get a full content-area height
-                    // (`bottom - margins.top`) since they start at the
-                    // top of subsequent pages.
+                    // continuation slices get the selected body height for
+                    // each subsequent page.
                     let available_first = (state.bottom - float_y_start).max(Pt::ZERO);
-                    let page_height = (state.bottom - config.margins.top).max(Pt::ZERO);
-                    let slices = layout_table_paginated(
+                    let page_height = ctx.page_bounds(state.page_index + 1).height();
+                    let section_page_index = state.page_index;
+                    let slices = layout_table_paginated_with_page_heights(
                         rows,
                         col_widths,
-                        &col_constraints(state.current_col),
+                        &col_constraints(
+                            state.current_col,
+                            (state.bottom - state.page_top).max(Pt::ZERO),
+                        ),
                         ctx.default_line_height,
                         border_config.as_ref(),
                         ctx.measure_text,
-                        &TablePaginationConfig {
-                            available_height: available_first,
-                            page_height,
-                            suppress_first_row_top: false,
+                        TablePaginationHeights {
+                            config: &TablePaginationConfig {
+                                available_height: available_first,
+                                page_height,
+                                suppress_first_row_top: false,
+                            },
+                            page_height_for_slice: |slice_index| {
+                                ctx.page_bounds(section_page_index + slice_index).height()
+                            },
                         },
                     );
 
@@ -929,7 +987,11 @@ pub fn layout_section(
                     // slices flow at the top of subsequent pages. Encoded
                     // by the `Anchor` / `Continuation` enum variants in
                     // the placement plan.
-                    let plan = plan_floating_table_pages(slices, float_y_start, config.margins.top);
+                    let plan = plan_floating_table_pages_with_page_tops(
+                        slices,
+                        float_y_start,
+                        |slice_index| ctx.page_bounds(section_page_index + slice_index).top,
+                    );
 
                     let table_width = table.size.width;
                     for (page_idx, placement) in plan.pages.into_iter().enumerate() {
@@ -996,17 +1058,26 @@ pub fn layout_section(
                 // Non-floating table: paginated row-level splitting.
                 // §17.4.49 / §17.4.1: split at row boundaries, repeat headers.
                 let available = state.bottom - state.cursor_y;
-                let slices = super::super::table::layout_table_paginated(
+                let section_page_index = state.page_index;
+                let slices = layout_table_paginated_with_page_heights(
                     rows,
                     col_widths,
-                    &col_constraints(state.current_col),
+                    &col_constraints(
+                        state.current_col,
+                        (state.bottom - state.page_top).max(Pt::ZERO),
+                    ),
                     ctx.default_line_height,
                     border_config.as_ref(),
                     ctx.measure_text,
-                    &TablePaginationConfig {
-                        available_height: available,
-                        page_height: config.content_height(),
-                        suppress_first_row_top: suppress_top,
+                    TablePaginationHeights {
+                        config: &TablePaginationConfig {
+                            available_height: available,
+                            page_height: ctx.page_bounds(section_page_index + 1).height(),
+                            suppress_first_row_top: suppress_top,
+                        },
+                        page_height_for_slice: |slice_index| {
+                            ctx.page_bounds(section_page_index + slice_index).height()
+                        },
                     },
                 );
 

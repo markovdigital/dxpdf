@@ -161,10 +161,10 @@ pub(super) struct FloatingTablePlan {
 /// Row-splitting and slice production are handled by
 /// `layout_table_paginated`; this function only assigns slices to
 /// page slots.
-pub(super) fn plan_floating_table_pages(
+pub(super) fn plan_floating_table_pages_with_page_tops(
     slices: Vec<TableSlice>,
     anchor_y: Pt,
-    continuation_y: Pt,
+    mut page_top_for_index: impl FnMut(usize) -> Pt,
 ) -> FloatingTablePlan {
     let pages = slices
         .into_iter()
@@ -177,7 +177,7 @@ pub(super) fn plan_floating_table_pages(
                 }
             } else {
                 FloatingTablePagePlacement::Continuation {
-                    y_start: continuation_y,
+                    y_start: page_top_for_index(idx),
                     slice,
                 }
             }
@@ -214,7 +214,10 @@ mod tests {
     /// a single `Anchor` at `anchor_y`.
     #[test]
     fn plan_single_slice_is_one_anchor_placement() {
-        let plan = plan_floating_table_pages(vec![slice(50.0)], Pt::new(100.0), Pt::new(40.0));
+        let plan =
+            plan_floating_table_pages_with_page_tops(vec![slice(50.0)], Pt::new(100.0), |_| {
+                Pt::new(40.0)
+            });
         assert_eq!(plan.pages.len(), 1);
         assert!(matches!(
             plan.pages[0],
@@ -227,10 +230,10 @@ mod tests {
     /// at continuation y.
     #[test]
     fn plan_two_slices_anchor_then_continuation() {
-        let plan = plan_floating_table_pages(
+        let plan = plan_floating_table_pages_with_page_tops(
             vec![slice(700.0), slice(100.0)],
             Pt::new(100.0),
-            Pt::new(40.0),
+            |_| Pt::new(40.0),
         );
         assert_eq!(plan.pages.len(), 2);
         assert!(matches!(
@@ -250,10 +253,10 @@ mod tests {
     /// This pins the "no second anchor page" rule.
     #[test]
     fn plan_n_slices_only_first_is_anchor_page() {
-        let plan = plan_floating_table_pages(
+        let plan = plan_floating_table_pages_with_page_tops(
             vec![slice(700.0), slice(700.0), slice(100.0)],
             Pt::new(150.0),
-            Pt::new(40.0),
+            |_| Pt::new(40.0),
         );
         assert_eq!(plan.pages.len(), 3);
         let anchor_count = plan
@@ -269,12 +272,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn continuation_slices_use_each_page_top_boundary() {
+        let plan = plan_floating_table_pages_with_page_tops(
+            vec![slice(50.0), slice(50.0), slice(50.0)],
+            Pt::new(100.0),
+            |page_index| match page_index {
+                1 => Pt::new(40.0),
+                _ => Pt::new(60.0),
+            },
+        );
+
+        assert_eq!(plan.pages[0].y_start(), Pt::new(100.0));
+        assert_eq!(plan.pages[1].y_start(), Pt::new(40.0));
+        assert_eq!(plan.pages[2].y_start(), Pt::new(60.0));
+    }
+
     /// Empty slice list → empty plan. Edge case: never happens via
     /// `layout_table_paginated` (which returns at least one slice for
     /// non-empty input), but guarded for safety.
     #[test]
     fn plan_empty_slices_returns_empty_plan() {
-        let plan = plan_floating_table_pages(Vec::new(), Pt::new(100.0), Pt::new(40.0));
+        let plan =
+            plan_floating_table_pages_with_page_tops(Vec::new(), Pt::new(100.0), |_| Pt::new(40.0));
         assert!(plan.pages.is_empty());
     }
 
@@ -282,10 +302,10 @@ mod tests {
     /// the planner only assigns placement, never modifies the slice.
     #[test]
     fn plan_preserves_slice_size_through_placement() {
-        let plan = plan_floating_table_pages(
+        let plan = plan_floating_table_pages_with_page_tops(
             vec![slice(123.4), slice(56.7)],
             Pt::new(100.0),
-            Pt::new(40.0),
+            |_| Pt::new(40.0),
         );
         assert_eq!(plan.pages[0].slice().size.height.raw(), 123.4);
         assert_eq!(plan.pages[1].slice().size.height.raw(), 56.7);

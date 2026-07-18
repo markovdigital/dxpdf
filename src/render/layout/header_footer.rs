@@ -74,6 +74,101 @@ pub fn select_slot_with_kind<T>(
     set.default.as_ref().map(|t| (HeaderFooterKind::Default, t))
 }
 
+/// Vertical body boundaries for one physical page.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PageBodyBounds {
+    /// Absolute y coordinate where body layout starts.
+    pub(crate) top: Pt,
+    /// Absolute y coordinate where body layout ends.
+    pub(crate) bottom: Pt,
+}
+
+impl PageBodyBounds {
+    pub(crate) fn height(self) -> Pt {
+        (self.bottom - self.top).max(Pt::ZERO)
+    }
+}
+
+/// Header/footer clearances measured independently for each OOXML slot.
+///
+/// The selected slot is resolved per physical section page using the same
+/// rules as header/footer drawing. An absent selected slot leaves the
+/// configured body margin unchanged rather than falling back to another slot.
+#[derive(Clone, Debug)]
+pub(crate) struct HeaderFooterClearance {
+    page_height: Pt,
+    configured_top: Pt,
+    configured_bottom: Pt,
+    headers: HeaderFooterSet<Pt>,
+    footers: HeaderFooterSet<Pt>,
+    title_pg: bool,
+    even_and_odd: bool,
+    logical_page_base: usize,
+}
+
+impl HeaderFooterClearance {
+    pub(crate) fn new(
+        config: &PageConfig,
+        headers: HeaderFooterSet<Pt>,
+        footers: HeaderFooterSet<Pt>,
+        title_pg: bool,
+        even_and_odd: bool,
+        logical_page_base: usize,
+    ) -> Self {
+        Self {
+            page_height: config.page_size.height,
+            configured_top: config.margins.top,
+            configured_bottom: config.margins.bottom,
+            headers,
+            footers,
+            title_pg,
+            even_and_odd,
+            logical_page_base,
+        }
+    }
+
+    pub(crate) fn uniform(config: &PageConfig) -> Self {
+        Self::new(
+            config,
+            HeaderFooterSet::default(),
+            HeaderFooterSet::default(),
+            false,
+            false,
+            1,
+        )
+    }
+
+    pub(crate) fn for_page(&self, section_page_index: usize) -> PageBodyBounds {
+        let first_in_section = section_page_index == 0;
+        let logical_page_number = self.logical_page_base + section_page_index;
+        let top = select_slot(
+            &self.headers,
+            first_in_section,
+            logical_page_number,
+            self.title_pg,
+            self.even_and_odd,
+        )
+        .copied()
+        .unwrap_or(self.configured_top)
+        .max(self.configured_top);
+        let bottom_margin = select_slot(
+            &self.footers,
+            first_in_section,
+            logical_page_number,
+            self.title_pg,
+            self.even_and_odd,
+        )
+        .copied()
+        .unwrap_or(self.configured_bottom)
+        .max(self.configured_bottom);
+
+        PageBodyBounds {
+            top,
+            bottom: self.page_height - bottom_margin,
+        }
+    }
+}
+
 /// Header and footer slots for a section, plus the spec flags that
 /// drive per-page selection. Selection rules live in [`select_slot`];
 /// the layout step calls it once per page in `render_headers_footers`.
@@ -585,6 +680,116 @@ mod tests {
                 position.y.raw()
             );
         }
+    }
+
+    #[test]
+    fn clearance_selects_first_even_and_default_bounds_per_page() {
+        let config = test_config();
+        let clearance = HeaderFooterClearance::new(
+            &config,
+            HeaderFooterSet {
+                default: Some(Pt::new(90.0)),
+                first: Some(Pt::new(150.0)),
+                even: Some(Pt::new(110.0)),
+            },
+            HeaderFooterSet {
+                default: Some(Pt::new(80.0)),
+                first: Some(Pt::new(130.0)),
+                even: Some(Pt::new(100.0)),
+            },
+            true,
+            true,
+            1,
+        );
+
+        assert_eq!(
+            clearance.for_page(0),
+            PageBodyBounds {
+                top: Pt::new(150.0),
+                bottom: Pt::new(662.0),
+            },
+        );
+        assert_eq!(
+            clearance.for_page(1),
+            PageBodyBounds {
+                top: Pt::new(110.0),
+                bottom: Pt::new(692.0),
+            },
+        );
+        assert_eq!(
+            clearance.for_page(2),
+            PageBodyBounds {
+                top: Pt::new(90.0),
+                bottom: Pt::new(712.0),
+            },
+        );
+    }
+
+    #[test]
+    fn clearance_uses_configured_margins_when_selected_slots_are_missing() {
+        let config = test_config();
+        let clearance = HeaderFooterClearance::new(
+            &config,
+            HeaderFooterSet {
+                default: Some(Pt::new(120.0)),
+                first: None,
+                even: None,
+            },
+            HeaderFooterSet {
+                default: Some(Pt::new(100.0)),
+                first: None,
+                even: None,
+            },
+            true,
+            true,
+            1,
+        );
+
+        assert_eq!(
+            clearance.for_page(0),
+            PageBodyBounds {
+                top: config.margins.top,
+                bottom: config.page_size.height - config.margins.bottom,
+            },
+            "missing first slots must not fall back to default",
+        );
+        assert_eq!(
+            clearance.for_page(1),
+            PageBodyBounds {
+                top: config.margins.top,
+                bottom: config.page_size.height - config.margins.bottom,
+            },
+            "missing even slots must not fall back to default",
+        );
+    }
+
+    #[test]
+    fn clearance_never_reduces_configured_page_margins() {
+        let config = test_config();
+        let clearance = HeaderFooterClearance::new(
+            &config,
+            HeaderFooterSet {
+                default: Some(Pt::new(40.0)),
+                first: None,
+                even: None,
+            },
+            HeaderFooterSet {
+                default: Some(Pt::new(30.0)),
+                first: None,
+                even: None,
+            },
+            false,
+            false,
+            1,
+        );
+
+        assert_eq!(
+            clearance.for_page(0),
+            PageBodyBounds {
+                top: config.margins.top,
+                bottom: config.page_size.height - config.margins.bottom,
+            },
+        );
     }
 
     /// Truth-table for `select_slot` covering ECMA-376 §17.10.6

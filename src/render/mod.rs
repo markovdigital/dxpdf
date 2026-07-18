@@ -91,9 +91,12 @@ use crate::render::layout::build::{
     build_section_blocks, default_line_height, BuildContext, BuildState,
 };
 use crate::render::layout::draw_command::LayoutedPage;
-use crate::render::layout::header_footer::{render_headers_footers, HeaderFooterBlocks, PageRange};
+use crate::render::layout::header_footer::{
+    render_headers_footers, HeaderFooterBlocks, HeaderFooterClearance, PageRange,
+};
 use crate::render::layout::page::PageConfig;
-use crate::render::layout::section::layout_section;
+use crate::render::layout::section::layout_section_with_clearance;
+use crate::render::resolve::header_footer::HeaderFooterSet;
 use crate::render::resolve::ResolvedDocument;
 
 /// Render a parsed DOCX document to PDF bytes.
@@ -219,20 +222,26 @@ pub fn layout_document(
 
     // §17.6.22: track continuation state for `Continuous` section breaks.
     let mut pending_continuation: Option<layout::section::ContinuationState> = None;
+    let even_and_odd = resolved.even_and_odd_headers;
 
     // Phase 1: layout all sections to determine total page count.
     for (section_idx, section) in resolved.sections.iter().enumerate() {
-        // §17.6.2: if header/footer content extends past the body margin,
-        // push the body start down (or bottom up) so content doesn't overlap.
-        let config = adjust_margins_for_header_footer(
-            PageConfig::from_section(&section.properties),
+        let config = PageConfig::from_section(&section.properties);
+        state.page_config = config.clone();
+        let logical_page_base = layout::header_footer::next_logical_page_base(
+            next_logical,
+            section.properties.page_number_type.as_ref(),
+        );
+        let clearance = measure_header_footer_clearance(
+            &config,
             section,
             &ctx,
             &mut state,
             dlh,
+            even_and_odd,
+            logical_page_base,
         );
 
-        state.page_config = config.clone();
         let built = build_section_blocks(section, &config, &ctx, &mut state);
         let measure_fn = |text: &str,
                           font: &layout::fragment::FontProps|
@@ -249,13 +258,14 @@ pub fn layout_document(
                 None
             };
 
-        let mut pages = layout_section(
+        let mut pages = layout_section_with_clearance(
             &built.blocks,
             &config,
             Some(&measure_fn),
             separator_indent,
             dlh,
             continuation,
+            &clearance,
         );
 
         // Collect endnotes for rendering at document end.
@@ -281,10 +291,6 @@ pub fn layout_document(
 
         let page_start = all_pages.len();
         all_pages.append(&mut pages);
-        let logical_page_base = layout::header_footer::next_logical_page_base(
-            next_logical,
-            section.properties.page_number_type.as_ref(),
-        );
         let pages_in_section = all_pages.len() - page_start;
         next_logical = logical_page_base + pages_in_section;
         section_hf.push(SectionHfInfo {
@@ -299,7 +305,6 @@ pub fn layout_document(
 
     // Phase 2: render headers/footers with correct NUMPAGES (total page count).
     let total_pages = all_pages.len();
-    let even_and_odd = resolved.even_and_odd_headers;
     for info in &section_hf {
         state.page_config = info.config.clone();
         render_headers_footers(
@@ -375,95 +380,111 @@ pub fn layout_document(
     all_pages
 }
 
-/// §17.6.2: if header or footer content extends past the body margin,
-/// adjust margins so body text starts after the header / ends before
-/// the footer.
-///
-/// Each section can supply up to three header parts (default / first /
-/// even) and three footer parts. To keep the body region consistent
-/// across pages within a section, we compute the extent as the
-/// **maximum** across every populated slot — the body starts low
-/// enough to clear the tallest header, and ends high enough to clear
-/// the tallest footer. Per-page slot variation in height is
-/// uncommon in real documents (Word styles all three slots
-/// identically by default), so this conservative allocation is
-/// indistinguishable from per-page adjustment in the typical case
-/// while keeping body geometry stable.
-fn adjust_margins_for_header_footer(
-    mut config: PageConfig,
+/// Measure each populated header/footer slot independently so pagination can
+/// reserve the slot selected for each physical page.
+fn measure_header_footer_clearance(
+    config: &PageConfig,
     section: &crate::render::resolve::sections::ResolvedSection,
     ctx: &layout::build::BuildContext,
     state: &mut BuildState,
     default_line_height: dimension::Pt,
-) -> PageConfig {
-    let content_width = config.content_width();
-    let header_slots = [
-        section.headers.default.as_deref(),
-        section.headers.first.as_deref(),
-        section.headers.even.as_deref(),
-    ];
-    let footer_slots = [
-        section.footers.default.as_deref(),
-        section.footers.first.as_deref(),
-        section.footers.even.as_deref(),
-    ];
+    even_and_odd: bool,
+    logical_page_base: usize,
+) -> HeaderFooterClearance {
+    let headers =
+        HeaderFooterSet {
+            default: section.headers.default.as_deref().map(|blocks| {
+                measure_header_bottom(blocks, config, ctx, state, default_line_height)
+            }),
+            first: section.headers.first.as_deref().map(|blocks| {
+                measure_header_bottom(blocks, config, ctx, state, default_line_height)
+            }),
+            even: section.headers.even.as_deref().map(|blocks| {
+                measure_header_bottom(blocks, config, ctx, state, default_line_height)
+            }),
+        };
+    let footers =
+        HeaderFooterSet {
+            default: section.footers.default.as_deref().map(|blocks| {
+                measure_footer_extent(blocks, config, ctx, state, default_line_height)
+            }),
+            first: section.footers.first.as_deref().map(|blocks| {
+                measure_footer_extent(blocks, config, ctx, state, default_line_height)
+            }),
+            even: section.footers.even.as_deref().map(|blocks| {
+                measure_footer_extent(blocks, config, ctx, state, default_line_height)
+            }),
+        };
 
-    let mut max_header_bottom = dimension::Pt::ZERO;
-    for blocks in header_slots.iter().flatten() {
-        let hf = layout::build::build_header_footer_content(blocks, ctx, state);
-        let result =
-            layout::section::stack_blocks(&hf.blocks, content_width, default_line_height, None);
+    HeaderFooterClearance::new(
+        config,
+        headers,
+        footers,
+        section.properties.title_page.unwrap_or(false),
+        even_and_odd,
+        logical_page_base,
+    )
+}
 
-        // §17.6.2: header_bottom is the greater of stacked block content and
-        // wrapTopAndBottom floating image extent, both measured from the header
-        // margin edge. wrapNone/behindDoc images are backgrounds and don't
-        // push body content down.
-        let blocks_bottom = config.header_margin + result.height;
-        let floats_bottom = hf
-            .floating_images
-            .iter()
-            .filter(|fi| fi.is_wrap_top_and_bottom())
-            .map(|fi| {
-                let y = match fi.y {
-                    layout::section::FloatingImageY::Absolute(y) => y,
-                    layout::section::FloatingImageY::RelativeToParagraph(off) => {
-                        config.header_margin + off
-                    }
-                };
-                y + fi.size.height
-            })
-            .fold(dimension::Pt::ZERO, |a, b| a.max(b));
-        max_header_bottom = max_header_bottom.max(blocks_bottom.max(floats_bottom));
-    }
-    if max_header_bottom > config.margins.top {
-        config.margins.top = max_header_bottom;
-    }
-
-    let mut max_footer_extent = dimension::Pt::ZERO;
-    for blocks in footer_slots.iter().flatten() {
-        let hf = layout::build::build_header_footer_content(blocks, ctx, state);
-        let result =
-            layout::section::stack_blocks(&hf.blocks, content_width, default_line_height, None);
-
-        let blocks_extent = config.footer_margin + result.height;
-        let floats_extent = hf
-            .floating_images
-            .iter()
-            .filter(|fi| fi.is_wrap_top_and_bottom())
-            .map(|fi| match fi.y {
-                layout::section::FloatingImageY::Absolute(y) => config.page_size.height - y,
+fn measure_header_bottom(
+    blocks: &[crate::model::Block],
+    config: &PageConfig,
+    ctx: &layout::build::BuildContext,
+    state: &mut BuildState,
+    default_line_height: dimension::Pt,
+) -> dimension::Pt {
+    let hf = layout::build::build_header_footer_content(blocks, ctx, state);
+    let result = layout::section::stack_blocks(
+        &hf.blocks,
+        config.content_width(),
+        default_line_height,
+        None,
+    );
+    let blocks_bottom = config.header_margin + result.height;
+    let floats_bottom = hf
+        .floating_images
+        .iter()
+        .filter(|fi| fi.is_wrap_top_and_bottom())
+        .map(|fi| {
+            let y = match fi.y {
+                layout::section::FloatingImageY::Absolute(y) => y,
                 layout::section::FloatingImageY::RelativeToParagraph(off) => {
-                    config.footer_margin + off + fi.size.height
+                    config.header_margin + off
                 }
-            })
-            .fold(dimension::Pt::ZERO, |a, b| a.max(b));
-        max_footer_extent = max_footer_extent.max(blocks_extent.max(floats_extent));
-    }
-    if max_footer_extent > config.margins.bottom {
-        config.margins.bottom = max_footer_extent;
-    }
+            };
+            y + fi.size.height
+        })
+        .fold(dimension::Pt::ZERO, |a, b| a.max(b));
+    blocks_bottom.max(floats_bottom)
+}
 
-    config
+fn measure_footer_extent(
+    blocks: &[crate::model::Block],
+    config: &PageConfig,
+    ctx: &layout::build::BuildContext,
+    state: &mut BuildState,
+    default_line_height: dimension::Pt,
+) -> dimension::Pt {
+    let hf = layout::build::build_header_footer_content(blocks, ctx, state);
+    let result = layout::section::stack_blocks(
+        &hf.blocks,
+        config.content_width(),
+        default_line_height,
+        None,
+    );
+    let blocks_extent = config.footer_margin + result.height;
+    let floats_extent = hf
+        .floating_images
+        .iter()
+        .filter(|fi| fi.is_wrap_top_and_bottom())
+        .map(|fi| match fi.y {
+            layout::section::FloatingImageY::Absolute(y) => config.page_size.height - y,
+            layout::section::FloatingImageY::RelativeToParagraph(off) => {
+                config.footer_margin + off + fi.size.height
+            }
+        })
+        .fold(dimension::Pt::ZERO, |a, b| a.max(b));
+    blocks_extent.max(floats_extent)
 }
 
 #[cfg(test)]
@@ -569,6 +590,88 @@ mod tests {
             .filter(|c| matches!(c, layout::draw_command::DrawCommand::Text { .. }))
             .count();
         assert_eq!(text_count, 2);
+    }
+
+    #[test]
+    fn body_layout_uses_the_header_and_footer_selected_for_each_page() {
+        use crate::model::dimension::{Dimension, Twips};
+
+        let mut doc = empty_doc();
+        let default_header = RelId::new("default-header");
+        let first_header = RelId::new("first-header");
+        let default_footer = RelId::new("default-footer");
+        let first_footer = RelId::new("first-footer");
+        doc.headers
+            .insert(default_header.clone(), vec![para("default header")]);
+        doc.headers.insert(
+            first_header.clone(),
+            vec![para("first header 1"), para("first header 2")],
+        );
+        doc.footers
+            .insert(default_footer.clone(), vec![para("default footer")]);
+        doc.footers.insert(
+            first_footer.clone(),
+            vec![para("first footer 1"), para("first footer 2")],
+        );
+        doc.body = (0..6).map(|index| para(&format!("body {index}"))).collect();
+        doc.final_section = SectionProperties {
+            page_size: Some(PageSize {
+                width: Some(Dimension::<Twips>::new(4000)),
+                height: Some(Dimension::<Twips>::new(2000)),
+                orientation: None,
+            }),
+            page_margins: Some(PageMargins {
+                top: Some(Dimension::<Twips>::new(200)),
+                right: Some(Dimension::<Twips>::new(200)),
+                bottom: Some(Dimension::<Twips>::new(200)),
+                left: Some(Dimension::<Twips>::new(200)),
+                header: Some(Dimension::<Twips>::new(100)),
+                footer: Some(Dimension::<Twips>::new(100)),
+                gutter: None,
+            }),
+            header_refs: SectionHeaderFooterRefs {
+                default: Some(default_header),
+                first: Some(first_header),
+                even: None,
+            },
+            footer_refs: SectionHeaderFooterRefs {
+                default: Some(default_footer),
+                first: Some(first_footer),
+                even: None,
+            },
+            title_page: Some(true),
+            ..Default::default()
+        };
+
+        let (_, pages) = resolve_and_layout(&doc);
+
+        assert_eq!(
+            pages.len(),
+            2,
+            "shorter default slots must expand page 2 body"
+        );
+        let body_positions = pages
+            .iter()
+            .map(|page| {
+                page.commands
+                    .iter()
+                    .filter_map(|command| match command {
+                        layout::draw_command::DrawCommand::Text { text, position, .. }
+                            if text.starts_with("body") =>
+                        {
+                            Some(position.y)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(body_positions[0].len(), 3);
+        assert_eq!(body_positions[1].len(), 3);
+        assert!(
+            body_positions[1][0] < body_positions[0][0],
+            "page 2 body must start below the shorter default header",
+        );
     }
 
     #[test]

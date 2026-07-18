@@ -45,11 +45,10 @@ pub(super) fn render_page_footnotes(
     default_line_height: Pt,
     measure_text: super::super::paragraph::MeasureTextFn<'_>,
     separator_indent: Pt,
+    page_bottom: Pt,
 ) {
     let content_width = config.content_width();
     let constraints = super::super::BoxConstraints::tight_width(content_width, Pt::INFINITY);
-    let page_bottom = config.page_size.height - config.margins.bottom;
-
     // Layout all footnotes to compute total height.
     let mut footnote_layouts = Vec::new();
     let mut total_height = FOOTNOTE_SEPARATOR_GAP; // separator line + gap above first note

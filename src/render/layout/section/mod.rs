@@ -10,6 +10,7 @@ mod stacker;
 mod types;
 
 pub use layout::layout_section;
+pub(crate) use layout::layout_section_with_clearance;
 pub use stacker::{stack_blocks, StackResult};
 pub use types::*;
 
@@ -41,12 +42,14 @@ mod tests {
     use crate::render::layout::draw_command::DrawCommand;
     use crate::render::layout::fragment::Fragment;
     use crate::render::layout::fragment::{FontProps, TextMetrics};
+    use crate::render::layout::header_footer::HeaderFooterClearance;
     use crate::render::layout::page::PageConfig;
     use crate::render::layout::paragraph::ParagraphStyle;
     use crate::render::layout::table::{
         TableBorderConfig, TableBorderLine, TableBorderStyle, TableCellInput, TableRowInput,
     };
     use crate::render::resolve::color::RgbColor;
+    use crate::render::resolve::header_footer::HeaderFooterSet;
     use std::cell::Cell;
     use std::rc::Rc;
     use std::sync::{Mutex, Once};
@@ -276,6 +279,117 @@ mod tests {
 
         assert_eq!(page1_texts.len(), 5, "5 paras fit on page 1 (5*14=70 < 80)");
         assert_eq!(page2_texts.len(), 1, "1 para on page 2");
+    }
+
+    #[test]
+    fn each_page_uses_its_selected_header_and_footer_clearance() {
+        let config = small_config();
+        let clearance = HeaderFooterClearance::new(
+            &config,
+            HeaderFooterSet {
+                default: None,
+                first: Some(Pt::new(30.0)),
+                even: None,
+            },
+            HeaderFooterSet {
+                default: None,
+                first: Some(Pt::new(30.0)),
+                even: None,
+            },
+            true,
+            false,
+            1,
+        );
+        let blocks: Vec<_> = (0..5).map(|i| para_block(&format!("p{i}"), 30.0)).collect();
+
+        let pages = layout_section_with_clearance(
+            &blocks,
+            &config,
+            None,
+            Pt::ZERO,
+            Pt::new(14.0),
+            None,
+            &clearance,
+        );
+
+        assert_eq!(pages.len(), 2, "page 2 must use the shorter default slots");
+        let page_texts = pages
+            .iter()
+            .map(|page| {
+                page.commands
+                    .iter()
+                    .filter_map(|command| match command {
+                        DrawCommand::Text { text, position, .. } => {
+                            Some((text.to_string(), position.y))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            page_texts[0].len(),
+            2,
+            "40pt first-page body fits two lines"
+        );
+        assert_eq!(
+            page_texts[1].len(),
+            3,
+            "80pt default-page body fits the remainder"
+        );
+        assert!(
+            page_texts[1][0].1 < page_texts[0][0].1,
+            "page 2 body must start at the shorter default-header boundary",
+        );
+    }
+
+    #[test]
+    fn footnotes_render_from_the_selected_footer_boundary_once() {
+        let config = small_config();
+        let clearance = HeaderFooterClearance::new(
+            &config,
+            HeaderFooterSet::default(),
+            HeaderFooterSet {
+                default: Some(Pt::new(30.0)),
+                first: None,
+                even: None,
+            },
+            false,
+            false,
+            1,
+        );
+        let block = LayoutBlock::Paragraph {
+            fragments: vec![text_frag("body", 30.0, 14.0)],
+            style: ParagraphStyle::default(),
+            page_break_before: false,
+            footnotes: vec![(
+                vec![text_frag("footnote", 30.0, 14.0)],
+                ParagraphStyle::default(),
+            )],
+            floating_images: vec![],
+            floating_shapes: vec![],
+        };
+
+        let pages = layout_section_with_clearance(
+            &[block],
+            &config,
+            None,
+            Pt::ZERO,
+            Pt::new(14.0),
+            None,
+            &clearance,
+        );
+        let separator_y = pages[0]
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                DrawCommand::Line { line, .. } => Some(line.start.y),
+                _ => None,
+            })
+            .expect("footnote separator");
+
+        assert_eq!(separator_y, Pt::new(52.0));
     }
 
     #[test]
