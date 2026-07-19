@@ -834,14 +834,14 @@ mod tests {
             underlined_text_frag("alpha ", 25.0),
             Fragment::Tab {
                 line_height: Pt::new(14.0),
-                fitting_width: Some(Pt::new(5.0)),
+                fitting_width: None,
             },
             text_frag("beta ", 25.0),
             text_frag("gamma", 30.0),
         ];
         let result = layout_paragraph(
             &fragments,
-            &body_constraints(60.0),
+            &body_constraints(70.0),
             &style,
             Pt::new(14.0),
             None,
@@ -856,6 +856,74 @@ mod tests {
             })
             .expect("underlined structured-tab gap");
         assert!((underline.end.x.raw() - 25.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn both_alignment_justifies_after_list_label_separator() {
+        let result = layout_paragraph(
+            &[
+                text_frag("1.", 10.0),
+                Fragment::Tab {
+                    line_height: Pt::new(14.0),
+                    fitting_width: Some(Pt::new(5.0)),
+                },
+                text_frag("alpha ", 20.0),
+                text_frag("beta ", 20.0),
+                text_frag("gamma", 30.0),
+            ],
+            &body_constraints(60.0),
+            &ParagraphStyle {
+                alignment: Alignment::Both,
+                tabs: vec![TabStopDef {
+                    position: Pt::new(15.0),
+                    alignment: crate::model::TabAlignment::Left,
+                    leader: crate::model::TabLeader::None,
+                }],
+                ..Default::default()
+            },
+            Pt::new(14.0),
+            None,
+        );
+
+        let xs = text_xs(&result);
+        assert!(
+            (xs[2] - 40.0).abs() < 0.01,
+            "the first list-item line must justify after its synthetic label tab: {xs:?}",
+        );
+    }
+
+    #[test]
+    fn both_alignment_justifies_after_picture_bullet_separator() {
+        let result = layout_paragraph(
+            &[
+                image_frag(10.0, 10.0),
+                Fragment::Tab {
+                    line_height: Pt::new(14.0),
+                    fitting_width: Some(Pt::new(5.0)),
+                },
+                text_frag("alpha ", 20.0),
+                text_frag("beta ", 20.0),
+                text_frag("gamma", 30.0),
+            ],
+            &body_constraints(60.0),
+            &ParagraphStyle {
+                alignment: Alignment::Both,
+                tabs: vec![TabStopDef {
+                    position: Pt::new(15.0),
+                    alignment: crate::model::TabAlignment::Left,
+                    leader: crate::model::TabLeader::None,
+                }],
+                ..Default::default()
+            },
+            Pt::new(14.0),
+            None,
+        );
+
+        let xs = text_xs(&result);
+        assert!(
+            (xs[1] - 40.0).abs() < 0.01,
+            "the first picture-bullet line must justify after its synthetic tab: {xs:?}",
+        );
     }
 
     #[test]

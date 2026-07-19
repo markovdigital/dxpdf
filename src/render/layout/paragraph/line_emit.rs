@@ -129,8 +129,13 @@ fn stretchable_gap_after(fragments: &[Fragment], frag_idx: usize, line_end: usiz
 
 fn line_has_justification_tab(fragments: &[Fragment], line_start: usize, line_end: usize) -> bool {
     fragments[line_start..line_end].iter().any(|fragment| {
-        is_tab_like(fragment)
-            || matches!(fragment, Fragment::Text { text, .. } if text.contains('\t'))
+        matches!(
+            fragment,
+            Fragment::Tab {
+                fitting_width: None,
+                ..
+            } | Fragment::PTab { .. }
+        ) || matches!(fragment, Fragment::Text { text, .. } if text.contains('\t'))
     })
 }
 
