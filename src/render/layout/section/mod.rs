@@ -851,6 +851,37 @@ mod tests {
     }
 
     #[test]
+    fn keep_next_does_not_move_heading_before_floating_table() {
+        let mut blocks = (0..4)
+            .map(|i| para_block(&format!("filler-{i}"), 30.0))
+            .collect::<Vec<_>>();
+        blocks.push(styled_para_block("heading", true, false));
+        blocks.push(floating_table_with_rows(1, 15.0));
+
+        let pages = layout_section(
+            &blocks,
+            &small_config(),
+            None,
+            Pt::ZERO,
+            Pt::new(14.0),
+            None,
+        );
+        let heading_page = pages
+            .iter()
+            .position(|page| {
+                page.commands.iter().any(
+                    |command| matches!(command, DrawCommand::Text { text, .. } if text.as_ref() == "heading"),
+                )
+            })
+            .expect("heading text");
+
+        assert_eq!(
+            heading_page, 0,
+            "a floating table must not act as the terminal block of a keep-next chain",
+        );
+    }
+
+    #[test]
     fn keep_next_heading_moves_with_bordered_first_table_row() {
         let mut blocks: Vec<_> = (0..3)
             .map(|i| para_block(&format!("fill{i}"), 30.0))

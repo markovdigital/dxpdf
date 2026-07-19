@@ -196,7 +196,13 @@ fn keep_next_terminal_table(blocks: &[LayoutBlock], start: usize) -> Option<&Lay
                 }
                 index += 1;
             }
-            LayoutBlock::Table { .. } => return Some(block),
+            LayoutBlock::Table {
+                float_info: None, ..
+            } => return Some(block),
+            LayoutBlock::Table {
+                float_info: Some(_),
+                ..
+            } => return None,
         }
     }
 
