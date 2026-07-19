@@ -78,11 +78,7 @@ pub(crate) struct PgSzXml {
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub(crate) struct PgMarXml {
-    #[serde(
-        rename = "@top",
-        default,
-        deserialize_with = "deserialize_optional_nonnegative_dimension"
-    )]
+    #[serde(rename = "@top", default)]
     top: Option<Dimension<Twips>>,
     #[serde(
         rename = "@right",
@@ -90,11 +86,7 @@ pub(crate) struct PgMarXml {
         deserialize_with = "deserialize_optional_nonnegative_dimension"
     )]
     right: Option<Dimension<Twips>>,
-    #[serde(
-        rename = "@bottom",
-        default,
-        deserialize_with = "deserialize_optional_nonnegative_dimension"
-    )]
+    #[serde(rename = "@bottom", default)]
     bottom: Option<Dimension<Twips>>,
     #[serde(
         rename = "@left",
@@ -160,17 +152,9 @@ pub(crate) struct ColXml {
 pub(crate) struct DocGridXml {
     #[serde(rename = "@type", default)]
     ty: Option<StDocGrid>,
-    #[serde(
-        rename = "@linePitch",
-        default,
-        deserialize_with = "deserialize_optional_nonnegative_dimension"
-    )]
+    #[serde(rename = "@linePitch", default)]
     line_pitch: Option<Dimension<Twips>>,
-    #[serde(
-        rename = "@charSpace",
-        default,
-        deserialize_with = "deserialize_optional_nonnegative_dimension"
-    )]
+    #[serde(rename = "@charSpace", default)]
     char_space: Option<Dimension<FractionPoints>>,
 }
 
@@ -402,6 +386,17 @@ mod tests {
     }
 
     #[test]
+    fn page_margins_preserve_signed_vertical_values() {
+        let s = parse(
+            r#"<sectPr><pgMar top="-720.0" right="1800" bottom="-360"
+                 left="1800" header="720" footer="720" gutter="0"/></sectPr>"#,
+        );
+        let pm = s.page_margins.unwrap();
+        assert_eq!(pm.top.unwrap().raw(), -720);
+        assert_eq!(pm.bottom.unwrap().raw(), -360);
+    }
+
+    #[test]
     fn cols_with_child_definitions() {
         let s = parse(
             r#"<sectPr><cols num="2" space="720" equalWidth="false">
@@ -422,6 +417,16 @@ mod tests {
         let g = s.doc_grid.unwrap();
         assert_eq!(g.grid_type, Some(DocGridType::Lines));
         assert_eq!(g.line_pitch.unwrap().raw(), 360);
+    }
+
+    #[test]
+    fn doc_grid_preserves_signed_decimal_values() {
+        let s = parse(
+            r#"<sectPr><docGrid type="linesAndChars" linePitch="-360.0" charSpace="-12"/></sectPr>"#,
+        );
+        let g = s.doc_grid.unwrap();
+        assert_eq!(g.line_pitch.unwrap().raw(), -360);
+        assert_eq!(g.char_space.unwrap().raw(), -12);
     }
 
     #[test]

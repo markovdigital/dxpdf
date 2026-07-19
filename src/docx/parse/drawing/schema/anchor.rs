@@ -38,29 +38,13 @@ pub struct ExtentXml {
 /// `<wp:effectExtent l=".." t=".." r=".." b=".."/>` — drawing overflow.
 #[derive(Debug, Deserialize)]
 pub struct EffectExtentXml {
-    #[serde(
-        rename = "@l",
-        default,
-        deserialize_with = "deserialize_optional_nonnegative_dimension"
-    )]
+    #[serde(rename = "@l", default)]
     pub l: Option<Dimension<Emu>>,
-    #[serde(
-        rename = "@t",
-        default,
-        deserialize_with = "deserialize_optional_nonnegative_dimension"
-    )]
+    #[serde(rename = "@t", default)]
     pub t: Option<Dimension<Emu>>,
-    #[serde(
-        rename = "@r",
-        default,
-        deserialize_with = "deserialize_optional_nonnegative_dimension"
-    )]
+    #[serde(rename = "@r", default)]
     pub r: Option<Dimension<Emu>>,
-    #[serde(
-        rename = "@b",
-        default,
-        deserialize_with = "deserialize_optional_nonnegative_dimension"
-    )]
+    #[serde(rename = "@b", default)]
     pub b: Option<Dimension<Emu>>,
 }
 
@@ -653,6 +637,16 @@ fn polygon(p: WrapPolygonXml) -> Option<WrapPolygon> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effect_extent_preserves_signed_decimal_values() {
+        let effect: EffectExtentXml =
+            quick_xml::de::from_str(r#"<effectExtent l="-12.0" t="-24" r="36" b="48"/>"#).unwrap();
+        assert_eq!(effect.l.unwrap().raw(), -12);
+        assert_eq!(effect.t.unwrap().raw(), -24);
+        assert_eq!(effect.r.unwrap().raw(), 36);
+        assert_eq!(effect.b.unwrap().raw(), 48);
+    }
 
     #[test]
     fn negative_decimal_extent_is_rejected() {
