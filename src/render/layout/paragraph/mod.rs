@@ -619,6 +619,34 @@ mod tests {
     }
 
     #[test]
+    fn both_alignment_justifies_from_trimmed_line_width() {
+        let mut trailing = text_frag("beta ", 25.0);
+        if let Fragment::Text { trimmed_width, .. } = &mut trailing {
+            *trimmed_width = Pt::new(20.0);
+        }
+        let result = layout_paragraph(
+            &[
+                text_frag("alpha ", 25.0),
+                trailing,
+                text_frag("gamma", 30.0),
+            ],
+            &body_constraints(60.0),
+            &ParagraphStyle {
+                alignment: Alignment::Both,
+                ..Default::default()
+            },
+            Pt::new(14.0),
+            None,
+        );
+
+        let xs = text_xs(&result);
+        assert!(
+            (xs[1] - 40.0).abs() < 0.01,
+            "the visible first line is 45pt wide, so its gap must grow by 15pt: {xs:?}",
+        );
+    }
+
+    #[test]
     fn both_alignment_keeps_explicit_break_lines_at_natural_width() {
         let style = ParagraphStyle {
             alignment: Alignment::Both,

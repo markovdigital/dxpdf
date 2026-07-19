@@ -134,6 +134,21 @@ fn line_has_justification_tab(fragments: &[Fragment], line_start: usize, line_en
     })
 }
 
+fn visible_line_width(fragments: &[Fragment], line: &super::super::line::FittedLine) -> Pt {
+    let last_visible = (line.start..line.end)
+        .rev()
+        .find(|&idx| !matches!(fragments[idx], Fragment::Bookmark { .. }));
+    (line.start..line.end)
+        .map(|idx| {
+            if Some(idx) == last_visible {
+                fragments[idx].trimmed_width()
+            } else {
+                fragments[idx].width()
+            }
+        })
+        .sum()
+}
+
 fn justification_extra_after(
     fragments: &[Fragment],
     line: &super::super::line::FittedLine,
@@ -218,7 +233,7 @@ pub(super) fn emit_line_commands(
         } else {
             (content_width - float_reduction - dc_offset).max(Pt::ZERO)
         };
-        let remaining = (line_available - line.width).max(Pt::ZERO);
+        let remaining = (line_available - visible_line_width(fragments, line)).max(Pt::ZERO);
         // §17.3.1.37: when a line contains tab characters, tab stops control
         // horizontal positioning — paragraph alignment does not apply. Absolute
         // position tabs (§17.3.1.30) place content explicitly for the same
