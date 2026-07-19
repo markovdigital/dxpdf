@@ -7,7 +7,7 @@ use super::super::page::PageConfig;
 use super::super::paragraph::{layout_paragraph, ParagraphBorderStyle, ParagraphStyle};
 use super::super::table::{
     layout_table, layout_table_paginated_with_page_heights, measure_leading_table_group_height,
-    TablePaginationConfig, TablePaginationHeights,
+    TablePaginationHeights,
 };
 use super::super::BoxConstraints;
 use super::floating_table::{
@@ -975,7 +975,6 @@ pub(crate) fn layout_section_with_clearance(
                     // continuation slices get the selected body height for
                     // each subsequent page.
                     let available_first = (state.bottom - float_y_start).max(Pt::ZERO);
-                    let page_height = ctx.page_bounds(state.page_index + 1).height();
                     let section_page_index = state.page_index;
                     let slices = layout_table_paginated_with_page_heights(
                         rows,
@@ -988,11 +987,8 @@ pub(crate) fn layout_section_with_clearance(
                         border_config.as_ref(),
                         ctx.measure_text,
                         TablePaginationHeights {
-                            config: &TablePaginationConfig {
-                                available_height: available_first,
-                                page_height,
-                                suppress_first_row_top: false,
-                            },
+                            available_height: available_first,
+                            suppress_first_row_top: false,
                             page_height_for_slice: |slice_index| {
                                 ctx.page_bounds(section_page_index + slice_index).height()
                             },
@@ -1086,11 +1082,8 @@ pub(crate) fn layout_section_with_clearance(
                     border_config.as_ref(),
                     ctx.measure_text,
                     TablePaginationHeights {
-                        config: &TablePaginationConfig {
-                            available_height: available,
-                            page_height: ctx.page_bounds(section_page_index + 1).height(),
-                            suppress_first_row_top: suppress_top,
-                        },
+                        available_height: available,
+                        suppress_first_row_top: suppress_top,
                         page_height_for_slice: |slice_index| {
                             ctx.page_bounds(section_page_index + slice_index).height()
                         },

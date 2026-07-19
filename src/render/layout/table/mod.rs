@@ -135,8 +135,9 @@ pub struct TablePaginationConfig {
     pub suppress_first_row_top: bool,
 }
 
-pub(crate) struct TablePaginationHeights<'a, F> {
-    pub(crate) config: &'a TablePaginationConfig,
+pub(crate) struct TablePaginationHeights<F> {
+    pub(crate) available_height: Pt,
+    pub(crate) suppress_first_row_top: bool,
     pub(crate) page_height_for_slice: F,
 }
 
@@ -164,7 +165,8 @@ pub fn layout_table_paginated(
         borders,
         measure_text,
         TablePaginationHeights {
-            config: pagination,
+            available_height: pagination.available_height,
+            suppress_first_row_top: pagination.suppress_first_row_top,
             page_height_for_slice: |_| page_height,
         },
     )
@@ -177,14 +179,13 @@ pub(crate) fn layout_table_paginated_with_page_heights(
     default_line_height: Pt,
     borders: Option<&TableBorderConfig>,
     measure_text: super::paragraph::MeasureTextFn<'_>,
-    pagination: TablePaginationHeights<'_, impl FnMut(usize) -> Pt>,
+    pagination: TablePaginationHeights<impl FnMut(usize) -> Pt>,
 ) -> Vec<TableSlice> {
     let TablePaginationHeights {
-        config: pagination,
+        available_height,
+        suppress_first_row_top,
         mut page_height_for_slice,
     } = pagination;
-    let available_height = pagination.available_height;
-    let suppress_first_row_top = pagination.suppress_first_row_top;
     if rows.is_empty() || col_widths.is_empty() {
         return vec![TableSlice {
             commands: Vec::new(),
@@ -1633,11 +1634,8 @@ mod tests {
             None,
             None,
             TablePaginationHeights {
-                config: &TablePaginationConfig {
-                    available_height: Pt::new(30.0),
-                    page_height: Pt::new(30.0),
-                    suppress_first_row_top: false,
-                },
+                available_height: Pt::new(30.0),
+                suppress_first_row_top: false,
                 page_height_for_slice: |slice_index| match slice_index {
                     1 => Pt::new(30.0),
                     _ => Pt::new(60.0),
