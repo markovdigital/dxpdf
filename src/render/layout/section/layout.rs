@@ -723,7 +723,7 @@ pub(crate) fn layout_section_with_clearance(
                             state.current_col,
                             (state.bottom - state.page_top).max(Pt::ZERO),
                         );
-                        let para = layout_paragraph(
+                        let mut para = layout_paragraph(
                             chunk,
                             &constraints,
                             &effective_style,
@@ -744,6 +744,22 @@ pub(crate) fn layout_section_with_clearance(
                             // Update para_start_y after page/column change so
                             // floating images use the correct position.
                             para_start_y = state.cursor_y;
+                            effective_style.page_y = state.cursor_y;
+                            effective_style.page_x = col_x(state.current_col);
+                            effective_style.page_content_width =
+                                config.columns[state.current_col].width;
+                            effective_style.page_floats = state.page_floats.clone();
+                            let destination_constraints = col_constraints(
+                                state.current_col,
+                                (state.bottom - state.page_top).max(Pt::ZERO),
+                            );
+                            para = layout_paragraph(
+                                chunk,
+                                &destination_constraints,
+                                &effective_style,
+                                ctx.default_line_height,
+                                ctx.measure_text,
+                            );
                         }
 
                         log::debug!(

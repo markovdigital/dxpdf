@@ -345,6 +345,74 @@ mod tests {
     }
 
     #[test]
+    fn paragraph_moved_to_taller_page_is_relaid_before_following_block() {
+        let config = small_config();
+        let clearance = HeaderFooterClearance::new(
+            &config,
+            HeaderFooterSet {
+                default: None,
+                first: Some(Pt::new(30.0)),
+                even: None,
+            },
+            HeaderFooterSet {
+                default: None,
+                first: Some(Pt::new(30.0)),
+                even: None,
+            },
+            true,
+            false,
+            1,
+        );
+        let moved = LayoutBlock::Paragraph {
+            fragments: (0..4)
+                .map(|i| text_frag(&format!("moved-{i} "), 170.0, 14.0))
+                .collect(),
+            style: ParagraphStyle::default(),
+            page_break_before: false,
+            footnotes: vec![],
+            floating_images: vec![],
+            floating_shapes: vec![],
+        };
+        let pages = layout_section_with_clearance(
+            &[para_block("before", 30.0), moved, para_block("after", 30.0)],
+            &config,
+            None,
+            Pt::ZERO,
+            Pt::new(14.0),
+            None,
+            &clearance,
+        );
+
+        assert_eq!(pages.len(), 2);
+        let moved_last_y = pages[1]
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                DrawCommand::Text { text, position, .. } if text.starts_with("moved-") => {
+                    Some(position.y.raw())
+                }
+                _ => None,
+            })
+            .max_by(f32::total_cmp)
+            .expect("moved paragraph text");
+        let after_y = pages[1]
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                DrawCommand::Text { text, position, .. } if text.as_ref() == "after" => {
+                    Some(position.y.raw())
+                }
+                _ => None,
+            })
+            .expect("following paragraph text");
+
+        assert!(
+            after_y > moved_last_y,
+            "following paragraph at {after_y:?} overlaps moved paragraph ending at {moved_last_y:?}",
+        );
+    }
+
+    #[test]
     fn footnotes_render_from_the_selected_footer_boundary_once() {
         let config = small_config();
         let clearance = HeaderFooterClearance::new(

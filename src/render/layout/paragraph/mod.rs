@@ -297,13 +297,9 @@ pub fn layout_paragraph(
         line_placements.is_empty(),
     );
 
-    let total_height = constraints
-        .constrain(PtSize::new(constraints.max_width, cursor_y))
-        .height;
-
     ParagraphLayout {
         commands,
-        size: PtSize::new(constraints.max_width, total_height),
+        size: PtSize::new(constraints.max_width, cursor_y),
     }
 }
 
