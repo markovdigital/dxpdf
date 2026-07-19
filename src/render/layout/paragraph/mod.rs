@@ -647,6 +647,121 @@ mod tests {
     }
 
     #[test]
+    fn distribute_alignment_spreads_characters_across_single_line() {
+        let result = layout_paragraph(
+            &[
+                text_frag("AB", 20.0),
+                hyperlink_frag("CD", 20.0, "https://example.invalid/distributed"),
+            ],
+            &body_constraints(60.0),
+            &ParagraphStyle {
+                alignment: Alignment::Distribute,
+                ..Default::default()
+            },
+            Pt::new(14.0),
+            None,
+        );
+
+        let texts = result
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                DrawCommand::Text {
+                    position,
+                    char_spacing,
+                    ..
+                } => Some((position.x.raw(), char_spacing.raw())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!((texts[0].0 - 0.0).abs() < 0.01);
+        assert!((texts[1].0 - 33.333).abs() < 0.01, "text runs: {texts:?}");
+        assert!((texts[0].1 - 6.667).abs() < 0.01, "text runs: {texts:?}");
+        assert!((texts[1].1 - 6.667).abs() < 0.01, "text runs: {texts:?}");
+
+        let link = result
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                DrawCommand::LinkAnnotation { rect, url }
+                    if url == "https://example.invalid/distributed" =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("distributed hyperlink");
+        assert!(((link.origin.x + link.size.width).raw() - 60.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn distribute_alignment_adds_to_existing_character_spacing() {
+        let mut first = text_frag("A", 10.0);
+        let mut second = text_frag("B", 10.0);
+        for fragment in [&mut first, &mut second] {
+            if let Fragment::Text { font, .. } = fragment {
+                Rc::make_mut(font).char_spacing = Pt::new(2.0);
+            }
+        }
+        let result = layout_paragraph(
+            &[first, second],
+            &body_constraints(30.0),
+            &ParagraphStyle {
+                alignment: Alignment::Distribute,
+                ..Default::default()
+            },
+            Pt::new(14.0),
+            None,
+        );
+        let texts = result
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                DrawCommand::Text {
+                    position,
+                    char_spacing,
+                    ..
+                } => Some((position.x.raw(), char_spacing.raw())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!((texts[0].1 - 12.0).abs() < 0.01, "text runs: {texts:?}");
+        assert!((texts[1].0 - 20.0).abs() < 0.01, "text runs: {texts:?}");
+    }
+
+    #[test]
+    fn distribute_alignment_keeps_tab_lines_at_natural_width() {
+        let result = layout_paragraph(
+            &[
+                text_frag("A", 10.0),
+                Fragment::Tab {
+                    line_height: Pt::new(14.0),
+                    fitting_width: None,
+                },
+                text_frag("B", 10.0),
+            ],
+            &body_constraints(60.0),
+            &ParagraphStyle {
+                alignment: Alignment::Distribute,
+                ..Default::default()
+            },
+            Pt::new(14.0),
+            None,
+        );
+        let spacings = result
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                DrawCommand::Text { char_spacing, .. } => Some(*char_spacing),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(spacings.iter().all(|spacing| *spacing == Pt::ZERO));
+    }
+
+    #[test]
     fn both_alignment_keeps_explicit_break_lines_at_natural_width() {
         let style = ParagraphStyle {
             alignment: Alignment::Both,

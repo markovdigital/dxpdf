@@ -176,6 +176,52 @@ fn justification_extra_after(
     }
 }
 
+fn distribution_unit_count(fragment: &Fragment, terminal: bool) -> usize {
+    match fragment {
+        Fragment::Text { text, .. } => {
+            if terminal {
+                text.trim_end().chars().count()
+            } else {
+                text.chars().count()
+            }
+        }
+        Fragment::Image { .. } | Fragment::Emoji { .. } => 1,
+        _ => 0,
+    }
+}
+
+fn distribution_gap_count_after(fragments: &[Fragment], frag_idx: usize, line_end: usize) -> usize {
+    let has_following_unit = fragments[frag_idx + 1..line_end]
+        .iter()
+        .any(|fragment| distribution_unit_count(fragment, false) > 0);
+    let units = distribution_unit_count(&fragments[frag_idx], !has_following_unit);
+    if has_following_unit {
+        units
+    } else {
+        units.saturating_sub(1)
+    }
+}
+
+fn distribution_extra_per_gap(
+    fragments: &[Fragment],
+    line: &super::super::line::FittedLine,
+    alignment: crate::model::Alignment,
+    line_has_tabs: bool,
+    remaining: Pt,
+) -> Pt {
+    if alignment != crate::model::Alignment::Distribute || line_has_tabs || remaining <= Pt::ZERO {
+        return Pt::ZERO;
+    }
+    let gaps = (line.start..line.end)
+        .map(|idx| distribution_gap_count_after(fragments, idx, line.end))
+        .sum::<usize>();
+    if gaps == 0 {
+        Pt::ZERO
+    } else {
+        remaining / gaps as f32
+    }
+}
+
 /// Emit `DrawCommand`s for all lines in a paragraph, advancing `cursor_y`
 /// by the total line height consumed.
 ///
@@ -262,6 +308,13 @@ pub(super) fn emit_line_commands(
             line_has_justification_tab(fragments, line.start, line.end),
             remaining,
         );
+        let distribution_extra = distribution_extra_per_gap(
+            fragments,
+            line,
+            style.alignment,
+            line_has_justification_tab(fragments, line.start, line.end),
+            remaining,
+        );
 
         let x_start = indent + align_offset;
 
@@ -287,7 +340,9 @@ pub(super) fn emit_line_commands(
                     } else {
                         Pt::ZERO
                     };
-                    let rendered_width = *width + extra_after;
+                    let distributed_width = distribution_extra
+                        * distribution_gap_count_after(fragments, frag_idx, line.end) as f32;
+                    let rendered_width = *width + extra_after + distributed_width;
 
                     // §17.3.2.32: render run-level shading behind text.
                     // Uses text bounds (ascent+descent), not full line height.
@@ -356,7 +411,7 @@ pub(super) fn emit_line_commands(
                         position: PtOffset::new(x + *text_offset, y),
                         text: text.clone(),
                         font_family: font.family.clone(),
-                        char_spacing: font.char_spacing,
+                        char_spacing: font.char_spacing + distribution_extra,
                         font_size: font.size,
                         bold: font.bold,
                         italic: font.italic,
@@ -425,7 +480,9 @@ pub(super) fn emit_line_commands(
                             src_rect: *src_rect,
                         });
                     }
-                    x += size.width;
+                    x += size.width
+                        + distribution_extra
+                            * distribution_gap_count_after(fragments, frag_idx, line.end) as f32;
                 }
                 Fragment::Emoji {
                     text,
@@ -456,7 +513,9 @@ pub(super) fn emit_line_commands(
                         presentation: *presentation,
                         structure: *structure,
                     });
-                    x += *advance;
+                    x += *advance
+                        + distribution_extra
+                            * distribution_gap_count_after(fragments, frag_idx, line.end) as f32;
                 }
                 Fragment::Tab { .. } => {
                     // §17.3.1.37: resolve to the next tab stop.
