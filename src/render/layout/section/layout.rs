@@ -175,7 +175,42 @@ fn paragraph_keep_next(block: &LayoutBlock) -> bool {
 
 fn starts_keep_next_chain(blocks: &[LayoutBlock], block_idx: usize) -> bool {
     paragraph_keep_next(&blocks[block_idx])
-        && (block_idx == 0 || !paragraph_keep_next(&blocks[block_idx - 1]))
+        && (block_idx == 0
+            || matches!(
+                blocks[block_idx],
+                LayoutBlock::Paragraph {
+                    page_break_before: true,
+                    ..
+                }
+            )
+            || !paragraph_keep_next(&blocks[block_idx - 1]))
+}
+
+#[cfg(test)]
+mod keep_next_chain_tests {
+    use super::*;
+    use crate::render::layout::paragraph::ParagraphStyle;
+
+    fn paragraph(keep_next: bool, page_break_before: bool) -> LayoutBlock {
+        LayoutBlock::Paragraph {
+            fragments: Vec::new(),
+            style: ParagraphStyle {
+                keep_next,
+                ..Default::default()
+            },
+            page_break_before,
+            footnotes: Vec::new(),
+            floating_images: Vec::new(),
+            floating_shapes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn page_break_before_starts_a_new_keep_next_chain() {
+        let blocks = [paragraph(true, false), paragraph(true, true)];
+
+        assert!(starts_keep_next_chain(&blocks, 1));
+    }
 }
 
 fn keep_next_terminal_table(blocks: &[LayoutBlock], start: usize) -> Option<&LayoutBlock> {
