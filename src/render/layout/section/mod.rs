@@ -713,6 +713,53 @@ mod tests {
     }
 
     #[test]
+    fn keep_next_fit_includes_group_footnotes() {
+        let mut blocks: Vec<_> = (0..3)
+            .map(|i| para_block(&format!("fill{i}"), 30.0))
+            .collect();
+        blocks.extend([
+            LayoutBlock::Paragraph {
+                fragments: vec![text_frag("heading", 30.0, 14.0)],
+                style: ParagraphStyle {
+                    keep_next: true,
+                    ..Default::default()
+                },
+                page_break_before: false,
+                footnotes: vec![(
+                    vec![text_frag("footnote", 30.0, 14.0)],
+                    ParagraphStyle::default(),
+                )],
+                floating_images: vec![],
+                floating_shapes: vec![],
+            },
+            styled_para_block("body", false, false),
+        ]);
+
+        let pages = layout_section(
+            &blocks,
+            &small_config(),
+            None,
+            Pt::ZERO,
+            Pt::new(14.0),
+            None,
+        );
+        let per_page = texts_per_page(&pages);
+        let heading_page = per_page
+            .iter()
+            .position(|page| page.iter().any(|text| text == "heading"))
+            .expect("heading text");
+        let body_page = per_page
+            .iter()
+            .position(|page| page.iter().any(|text| text == "body"))
+            .expect("body text");
+
+        assert_eq!(
+            heading_page, body_page,
+            "footnote height must participate in keep-next fit checks",
+        );
+    }
+
+    #[test]
     fn contextual_keep_next_chain_stays_when_collapsed_spacing_fits() {
         let mut blocks: Vec<_> = (0..2)
             .map(|i| para_block(&format!("fill{i}"), 30.0))

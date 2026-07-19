@@ -262,14 +262,36 @@ fn fresh_page_contextual_space_before(
     }
 }
 
+struct KeepNextGroupMeasurement {
+    body_height: Pt,
+    footnote_height: Pt,
+    has_footnotes: bool,
+}
+
+impl KeepNextGroupMeasurement {
+    fn total_height(&self, separator_already_reserved: bool) -> Pt {
+        self.body_height
+            + self.footnote_height
+            + if self.has_footnotes && !separator_already_reserved {
+                FOOTNOTE_SEPARATOR_GAP
+            } else {
+                Pt::ZERO
+            }
+    }
+}
+
 fn measure_keep_next_group(
     blocks: &[LayoutBlock],
     start: usize,
     constraints: &BoxConstraints,
     default_line_height: Pt,
     measure_text: super::super::paragraph::MeasureTextFn<'_>,
-) -> Option<Pt> {
-    let mut height = Pt::ZERO;
+) -> Option<KeepNextGroupMeasurement> {
+    let mut measurement = KeepNextGroupMeasurement {
+        body_height: Pt::ZERO,
+        footnote_height: Pt::ZERO,
+        has_footnotes: false,
+    };
     let mut previous_space_after = Pt::ZERO;
     let mut previous_style_id = None;
     let mut index = start;
@@ -280,6 +302,7 @@ fn measure_keep_next_group(
                 fragments,
                 style,
                 page_break_before,
+                footnotes,
                 ..
             } => {
                 if index > start && *page_break_before {
@@ -301,16 +324,27 @@ fn measure_keep_next_group(
                     default_line_height,
                     measure_text,
                 );
-                height += layout.size.height - collapsed;
+                measurement.body_height += layout.size.height - collapsed;
+                for (footnote_fragments, footnote_style) in footnotes {
+                    let footnote = layout_paragraph(
+                        footnote_fragments,
+                        &BoxConstraints::tight_width(constraints.max_width, Pt::INFINITY),
+                        footnote_style,
+                        default_line_height,
+                        measure_text,
+                    );
+                    measurement.footnote_height += footnote.size.height;
+                    measurement.has_footnotes = true;
+                }
                 previous_space_after = effective.space_after;
                 previous_style_id = effective.style_id.clone();
                 if !effective.keep_next {
-                    return Some(height);
+                    return Some(measurement);
                 }
                 index += 1;
             }
             LayoutBlock::Table { .. } => {
-                return Some(height);
+                return Some(measurement);
             }
         }
     }
@@ -405,13 +439,15 @@ pub(crate) fn layout_section_with_clearance(
                         state.current_col,
                         (state.bottom - state.page_top).max(Pt::ZERO),
                     );
-                    if let Some(group_height) = measure_keep_next_group(
+                    if let Some(group) = measure_keep_next_group(
                         blocks,
                         block_idx,
                         &constraints,
                         ctx.default_line_height,
                         ctx.measure_text,
                     ) {
+                        let current_group_height =
+                            group.total_height(!state.page_footnotes.is_empty());
                         let current_group_top = match &blocks[block_idx] {
                             LayoutBlock::Paragraph { style, .. }
                                 if style.contextual_spacing
@@ -426,7 +462,7 @@ pub(crate) fn layout_section_with_clearance(
                             LayoutBlock::Table { .. } => state.cursor_y,
                         };
                         let full_page_height = ctx.page_bounds(state.page_index + 1).height();
-                        let fresh_page_group_height = group_height
+                        let fresh_page_group_height = group.total_height(false)
                             - fresh_page_contextual_space_before(
                                 &blocks[block_idx],
                                 &state.prev_style_id,
@@ -439,7 +475,7 @@ pub(crate) fn layout_section_with_clearance(
                                 ..
                             }) if !rows.is_empty() => {
                                 let current_available =
-                                    state.bottom - current_group_top - group_height;
+                                    state.bottom - current_group_top - current_group_height;
                                 let full_page_available =
                                     full_page_height - fresh_page_group_height;
                                 let leading_group_height = measure_leading_table_group_height(
@@ -456,7 +492,7 @@ pub(crate) fn layout_section_with_clearance(
                             }
                             _ => {
                                 fresh_page_group_height <= full_page_height
-                                    && current_group_top + group_height > state.bottom
+                                    && current_group_top + current_group_height > state.bottom
                             }
                         };
                         if should_move && state.cursor_y > state.column_top {
